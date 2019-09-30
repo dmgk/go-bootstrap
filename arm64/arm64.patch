@@ -1,0 +1,5554 @@
+diff --git a/src/cmd/api/goapi.go b/src/cmd/api/goapi.go
+index b46b310267..84ed3fa4eb 100644
+--- a/src/cmd/api/goapi.go
++++ b/src/cmd/api/goapi.go
+@@ -71,6 +71,8 @@ var contexts = []*build.Context{
+ 	{GOOS: "freebsd", GOARCH: "amd64"},
+ 	{GOOS: "freebsd", GOARCH: "arm", CgoEnabled: true},
+ 	{GOOS: "freebsd", GOARCH: "arm"},
++	{GOOS: "freebsd", GOARCH: "arm64", CgoEnabled: true},
++	{GOOS: "freebsd", GOARCH: "arm64"},
+ 	{GOOS: "netbsd", GOARCH: "386", CgoEnabled: true},
+ 	{GOOS: "netbsd", GOARCH: "386"},
+ 	{GOOS: "netbsd", GOARCH: "amd64", CgoEnabled: true},
+diff --git a/src/cmd/dist/build.go b/src/cmd/dist/build.go
+index 9e503117ae..898dc56029 100644
+--- a/src/cmd/dist/build.go
++++ b/src/cmd/dist/build.go
+@@ -1486,6 +1486,7 @@ var cgoEnabled = map[string]bool{
+ 	"freebsd/386":     true,
+ 	"freebsd/amd64":   true,
+ 	"freebsd/arm":     true,
++	"freebsd/arm64":   true,
+ 	"illumos/amd64":   true,
+ 	"linux/386":       true,
+ 	"linux/amd64":     true,
+diff --git a/src/cmd/link/internal/arm64/obj.go b/src/cmd/link/internal/arm64/obj.go
+index 7c6662302f..d04c260d3a 100644
+--- a/src/cmd/link/internal/arm64/obj.go
++++ b/src/cmd/link/internal/arm64/obj.go
+@@ -86,7 +86,8 @@ func archinit(ctxt *ld.Link) {
+ 
+ 	case objabi.Hlinux, /* arm64 elf */
+ 		objabi.Hnetbsd,
+-		objabi.Hopenbsd:
++		objabi.Hopenbsd,
++		objabi.Hfreebsd:
+ 		ld.Elfinit(ctxt)
+ 		ld.HEADR = ld.ELFRESERVE
+ 		if *ld.FlagTextAddr == -1 {
+diff --git a/src/cmd/nm/nm_cgo_test.go b/src/cmd/nm/nm_cgo_test.go
+index 475c57b4c2..51f4ab54ac 100644
+--- a/src/cmd/nm/nm_cgo_test.go
++++ b/src/cmd/nm/nm_cgo_test.go
+@@ -27,6 +27,11 @@ func canInternalLink() bool {
+ 		case "arm64":
+ 			return false
+ 		}
++	case "freebsd":
++		switch runtime.GOARCH {
++		case "arm64":
++			return false
++		}
+ 	}
+ 	return true
+ }
+diff --git a/src/runtime/cgo/gcc_freebsd_arm64.c b/src/runtime/cgo/gcc_freebsd_arm64.c
+new file mode 100644
+index 0000000000..dd8f888290
+--- /dev/null
++++ b/src/runtime/cgo/gcc_freebsd_arm64.c
+@@ -0,0 +1,68 @@
++// Copyright 2019 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++#include <sys/types.h>
++#include <errno.h>
++#include <sys/signalvar.h>
++#include <pthread.h>
++#include <signal.h>
++#include <string.h>
++#include "libcgo.h"
++#include "libcgo_unix.h"
++
++static void* threadentry(void*);
++static void (*setg_gcc)(void*);
++
++void
++x_cgo_init(G *g, void (*setg)(void*))
++{
++	pthread_attr_t attr;
++	size_t size;
++
++	setg_gcc = setg;
++	pthread_attr_init(&attr);
++	pthread_attr_getstacksize(&attr, &size);
++	g->stacklo = (uintptr)&attr - size + 4096;
++	pthread_attr_destroy(&attr);
++}
++
++void
++_cgo_sys_thread_start(ThreadStart *ts)
++{
++	pthread_attr_t attr;
++	sigset_t ign, oset;
++	pthread_t p;
++	size_t size;
++	int err;
++
++	SIGFILLSET(ign);
++	pthread_sigmask(SIG_SETMASK, &ign, &oset);
++
++	pthread_attr_init(&attr);
++	pthread_attr_getstacksize(&attr, &size);
++	// Leave stacklo=0 and set stackhi=size; mstart will do the rest.
++	ts->g->stackhi = size;
++	err = _cgo_try_pthread_create(&p, &attr, threadentry, ts);
++
++	pthread_sigmask(SIG_SETMASK, &oset, nil);
++
++	if (err != 0) {
++		fprintf(stderr, "runtime/cgo: pthread_create failed: %s\n", strerror(err));
++		abort();
++	}
++}
++
++extern void crosscall1(void (*fn)(void), void (*setg_gcc)(void*), void *g);
++
++static void*
++threadentry(void *v)
++{
++	ThreadStart ts;
++
++	ts = *(ThreadStart*)v;
++	free(v);
++
++	crosscall1(ts.fn, setg_gcc, (void*)ts.g);
++	return nil;
++}
+diff --git a/src/runtime/defs_freebsd_arm64.go b/src/runtime/defs_freebsd_arm64.go
+new file mode 100644
+index 0000000000..575f8cb91a
+--- /dev/null
++++ b/src/runtime/defs_freebsd_arm64.go
+@@ -0,0 +1,252 @@
++// created by cgo -cdefs and then converted to Go
++// cgo -cdefs defs_freebsd.go
++
++package runtime
++
++import "unsafe"
++
++const (
++	_NBBY            = 0x8
++	_CTL_MAXNAME     = 0x18
++	_CPU_LEVEL_WHICH = 0x3
++	_CPU_WHICH_PID   = 0x2
++)
++
++const (
++	_EINTR  = 0x4
++	_EFAULT = 0xe
++
++	_PROT_NONE  = 0x0
++	_PROT_READ  = 0x1
++	_PROT_WRITE = 0x2
++	_PROT_EXEC  = 0x4
++
++	_MAP_ANON    = 0x1000
++	_MAP_SHARED  = 0x1
++	_MAP_PRIVATE = 0x2
++	_MAP_FIXED   = 0x10
++
++	_MADV_FREE = 0x5
++
++	_SA_SIGINFO = 0x40
++	_SA_RESTART = 0x2
++	_SA_ONSTACK = 0x1
++
++	_CLOCK_MONOTONIC = 0x4
++	_CLOCK_REALTIME  = 0x0
++
++	_UMTX_OP_WAIT_UINT         = 0xb
++	_UMTX_OP_WAIT_UINT_PRIVATE = 0xf
++	_UMTX_OP_WAKE              = 0x3
++	_UMTX_OP_WAKE_PRIVATE      = 0x10
++
++	_SIGHUP    = 0x1
++	_SIGINT    = 0x2
++	_SIGQUIT   = 0x3
++	_SIGILL    = 0x4
++	_SIGTRAP   = 0x5
++	_SIGABRT   = 0x6
++	_SIGEMT    = 0x7
++	_SIGFPE    = 0x8
++	_SIGKILL   = 0x9
++	_SIGBUS    = 0xa
++	_SIGSEGV   = 0xb
++	_SIGSYS    = 0xc
++	_SIGPIPE   = 0xd
++	_SIGALRM   = 0xe
++	_SIGTERM   = 0xf
++	_SIGURG    = 0x10
++	_SIGSTOP   = 0x11
++	_SIGTSTP   = 0x12
++	_SIGCONT   = 0x13
++	_SIGCHLD   = 0x14
++	_SIGTTIN   = 0x15
++	_SIGTTOU   = 0x16
++	_SIGIO     = 0x17
++	_SIGXCPU   = 0x18
++	_SIGXFSZ   = 0x19
++	_SIGVTALRM = 0x1a
++	_SIGPROF   = 0x1b
++	_SIGWINCH  = 0x1c
++	_SIGINFO   = 0x1d
++	_SIGUSR1   = 0x1e
++	_SIGUSR2   = 0x1f
++
++	_FPE_INTDIV = 0x2
++	_FPE_INTOVF = 0x1
++	_FPE_FLTDIV = 0x3
++	_FPE_FLTOVF = 0x4
++	_FPE_FLTUND = 0x5
++	_FPE_FLTRES = 0x6
++	_FPE_FLTINV = 0x7
++	_FPE_FLTSUB = 0x8
++
++	_BUS_ADRALN = 0x1
++	_BUS_ADRERR = 0x2
++	_BUS_OBJERR = 0x3
++
++	_SEGV_MAPERR = 0x1
++	_SEGV_ACCERR = 0x2
++
++	_ITIMER_REAL    = 0x0
++	_ITIMER_VIRTUAL = 0x1
++	_ITIMER_PROF    = 0x2
++
++	_EV_ADD       = 0x1
++	_EV_DELETE    = 0x2
++	_EV_CLEAR     = 0x20
++	_EV_RECEIPT   = 0x40
++	_EV_ERROR     = 0x4000
++	_EV_EOF       = 0x8000
++	_EVFILT_READ  = -0x1
++	_EVFILT_WRITE = -0x2
++)
++
++type rtprio struct {
++	_type uint16
++	prio  uint16
++}
++
++type thrparam struct {
++	start_func uintptr
++	arg        unsafe.Pointer
++	stack_base uintptr
++	stack_size uintptr
++	tls_base   unsafe.Pointer
++	tls_size   uintptr
++	child_tid  unsafe.Pointer // *int64
++	parent_tid *int64
++	flags      int32
++	pad_cgo_0  [4]byte
++	rtp        *rtprio
++	spare      [3]uintptr
++}
++
++type sigset struct {
++	__bits [4]uint32
++}
++
++type stackt struct {
++	ss_sp     uintptr
++	ss_size   uintptr
++	ss_flags  int32
++	pad_cgo_0 [4]byte
++}
++
++type siginfo struct {
++	si_signo  int32
++	si_errno  int32
++	si_code   int32
++	si_pid    int32
++	si_uid    uint32
++	si_status int32
++	si_addr   uint64
++	si_value  [8]byte
++	_reason   [40]byte
++}
++
++type gpregs struct {
++	gp_x    [30]uint64
++	gp_lr   uint64
++	gp_sp   uint64
++	gp_elr  uint64
++	gp_spsr uint32
++	gp_pad  int32
++}
++
++type fpregs struct {
++	fp_q     [64]uint64 // actually [32]uint128
++	fp_sr    uint32
++	fp_cr    uint32
++	fp_flags int32
++	fp_pad   int32
++}
++
++type mcontext struct {
++	mc_gpregs gpregs
++	mc_fpregs fpregs
++	mc_flags  int32
++	mc_pad    int32
++	mc_spare  [8]uint64
++}
++
++type ucontext struct {
++	uc_sigmask  sigset
++	uc_mcontext mcontext
++	uc_link     *ucontext
++	uc_stack    stackt
++	uc_flags    int32
++	__spare__   [4]int32
++	pad_cgo_0   [12]byte
++}
++
++type timespec struct {
++	tv_sec  int64
++	tv_nsec int64
++}
++
++//go:nosplit
++func (ts *timespec) setNsec(ns int64) {
++	ts.tv_sec = ns / 1e9
++	ts.tv_nsec = ns % 1e9
++}
++
++type timeval struct {
++	tv_sec  int64
++	tv_usec int64
++}
++
++func (tv *timeval) set_usec(x int32) {
++	tv.tv_usec = int64(x)
++}
++
++type itimerval struct {
++	it_interval timeval
++	it_value    timeval
++}
++
++type umtx_time struct {
++	_timeout timespec
++	_flags   uint32
++	_clockid uint32
++}
++
++type keventt struct {
++	ident  uint64
++	filter int16
++	flags  uint16
++	fflags uint32
++	data   int64
++	udata  *byte
++}
++
++type bintime struct {
++	sec  int64
++	frac uint64
++}
++
++type vdsoTimehands struct {
++	algo         uint32
++	gen          uint32
++	scale        uint64
++	offset_count uint32
++	counter_mask uint32
++	offset       bintime
++	boottime     bintime
++	physical     uint32
++	res          [7]uint32
++}
++
++type vdsoTimekeep struct {
++	ver       uint32
++	enabled   uint32
++	current   uint32
++	pad_cgo_0 [4]byte
++}
++
++const (
++	_VDSO_TK_VER_CURR = 0x1
++
++	vdsoTimehandsSize = 0x58
++	vdsoTimekeepSize  = 0x10
++)
+diff --git a/src/runtime/os_freebsd_arm64.go b/src/runtime/os_freebsd_arm64.go
+new file mode 100644
+index 0000000000..f601708120
+--- /dev/null
++++ b/src/runtime/os_freebsd_arm64.go
+@@ -0,0 +1,156 @@
++// Copyright 2019 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package runtime
++
++import "internal/cpu"
++
++const (
++	hwcap_FP       = 1 << 0
++	hwcap_ASIMD    = 1 << 1
++	hwcap_EVTSTRM  = 1 << 2
++	hwcap_AES      = 1 << 3
++	hwcap_PMULL    = 1 << 4
++	hwcap_SHA1     = 1 << 5
++	hwcap_SHA2     = 1 << 6
++	hwcap_CRC32    = 1 << 7
++	hwcap_ATOMICS  = 1 << 8
++	hwcap_FPHP     = 1 << 9
++	hwcap_ASIMDHP  = 1 << 10
++	hwcap_CPUID    = 1 << 11
++	hwcap_ASIMDRDM = 1 << 12
++	hwcap_JSCVT    = 1 << 13
++	hwcap_FCMA     = 1 << 14
++	hwcap_LRCPC    = 1 << 15
++	hwcap_DCPOP    = 1 << 16
++	hwcap_SHA3     = 1 << 17
++	hwcap_SM3      = 1 << 18
++	hwcap_SM4      = 1 << 19
++	hwcap_ASIMDDP  = 1 << 20
++	hwcap_SHA512   = 1 << 21
++	hwcap_SVE      = 1 << 22
++	hwcap_ASIMDFHM = 1 << 23
++)
++
++func getisar0() uint64
++func getisar1() uint64
++func getpfr0() uint64
++
++// no hwcap support on FreeBSD aarch64, we need to retrieve the info from
++// ID_AA64ISAR0_EL1, ID_AA64ISAR1_EL1 and ID_AA64PFR0_EL1
++func archauxv(tag, val uintptr) {
++	var isar0, isar1, pfr0 uint64
++
++	isar0 = getisar0()
++	isar1 = getisar1()
++	pfr0 = getpfr0()
++
++	// ID_AA64ISAR0_EL1
++	switch extract_bits(isar0, 4, 7) {
++	case 1:
++		cpu.HWCap |= hwcap_AES
++	case 2:
++		cpu.HWCap |= hwcap_PMULL | hwcap_AES
++	}
++
++	switch extract_bits(isar0, 8, 11) {
++	case 1:
++		cpu.HWCap |= hwcap_SHA1
++	}
++
++	switch extract_bits(isar0, 12, 15) {
++	case 1:
++		cpu.HWCap |= hwcap_SHA2
++	case 2:
++		cpu.HWCap |= hwcap_SHA2 | hwcap_SHA512
++	}
++
++	switch extract_bits(isar0, 16, 19) {
++	case 1:
++		cpu.HWCap |= hwcap_CRC32
++	}
++
++	switch extract_bits(isar0, 20, 23) {
++	case 2:
++		cpu.HWCap |= hwcap_ATOMICS
++	}
++
++	switch extract_bits(isar0, 28, 31) {
++	case 1:
++		cpu.HWCap |= hwcap_ASIMDRDM
++	}
++
++	switch extract_bits(isar0, 32, 35) {
++	case 1:
++		cpu.HWCap |= hwcap_SHA3
++	}
++
++	switch extract_bits(isar0, 36, 39) {
++	case 1:
++		cpu.HWCap |= hwcap_SM3
++	}
++
++	switch extract_bits(isar0, 40, 43) {
++	case 1:
++		cpu.HWCap |= hwcap_SM4
++	}
++
++	switch extract_bits(isar0, 44, 47) {
++	case 1:
++		cpu.HWCap |= hwcap_ASIMDDP
++	}
++
++	// ID_AA64ISAR1_EL1
++	switch extract_bits(isar1, 0, 3) {
++	case 1:
++		cpu.HWCap |= hwcap_DCPOP
++	}
++
++	switch extract_bits(isar1, 12, 15) {
++	case 1:
++		cpu.HWCap |= hwcap_JSCVT
++	}
++
++	switch extract_bits(isar1, 16, 19) {
++	case 1:
++		cpu.HWCap |= hwcap_FCMA
++	}
++
++	switch extract_bits(isar1, 20, 23) {
++	case 1:
++		cpu.HWCap |= hwcap_LRCPC
++	}
++
++	// ID_AA64PFR0_EL1
++	switch extract_bits(pfr0, 16, 19) {
++	case 0:
++		cpu.HWCap |= hwcap_FP
++	case 1:
++		cpu.HWCap |= hwcap_FP | hwcap_FPHP
++	}
++
++	switch extract_bits(pfr0, 20, 23) {
++	case 0:
++		cpu.HWCap |= hwcap_ASIMD
++	case 1:
++		cpu.HWCap |= hwcap_ASIMD | hwcap_ASIMDHP
++	}
++
++	switch extract_bits(pfr0, 32, 35) {
++	case 1:
++		cpu.HWCap |= hwcap_SVE
++	}
++}
++
++func extract_bits(data uint64, start, end uint) uint {
++	return (uint)(data >> start) & ((1 << (end - start + 1)) - 1)
++}
++
++//go:nosplit
++func cputicks() int64 {
++	// Currently cputicks() is used in blocking profiler and to seed fastrand().
++	// nanotime() is a poor approximation of CPU ticks that is enough for the profiler.
++	// TODO: need more entropy to better seed fastrand.
++	return nanotime()
++}
+diff --git a/src/runtime/os_freebsd_noauxv.go b/src/runtime/os_freebsd_noauxv.go
+index 01efb9b7c9..5f41058dc4 100644
+--- a/src/runtime/os_freebsd_noauxv.go
++++ b/src/runtime/os_freebsd_noauxv.go
+@@ -4,6 +4,7 @@
+ 
+ // +build freebsd
+ // +build !arm
++// +build !arm64
+ 
+ package runtime
+ 
+diff --git a/src/runtime/rt0_freebsd_arm64.s b/src/runtime/rt0_freebsd_arm64.s
+new file mode 100644
+index 0000000000..e090458734
+--- /dev/null
++++ b/src/runtime/rt0_freebsd_arm64.s
+@@ -0,0 +1,106 @@
++// Copyright 2019 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++#include "textflag.h"
++
++// On FreeBSD argc/argv are passed in R0, not RSP
++TEXT _rt0_arm64_freebsd(SB),NOSPLIT|NOFRAME,$0
++	ADD	$8, R0, R1	// argv
++	MOVD	0(R0), R0	// argc
++	BL	main(SB)
++
++// When building with -buildmode=c-shared, this symbol is called when the shared
++// library is loaded.
++TEXT _rt0_arm64_freebsd_lib(SB),NOSPLIT,$184
++	// Preserve callee-save registers.
++	MOVD R19, 24(RSP)
++	MOVD R20, 32(RSP)
++	MOVD R21, 40(RSP)
++	MOVD R22, 48(RSP)
++	MOVD R23, 56(RSP)
++	MOVD R24, 64(RSP)
++	MOVD R25, 72(RSP)
++	MOVD R26, 80(RSP)
++	MOVD R27, 88(RSP)
++	FMOVD F8, 96(RSP)
++	FMOVD F9, 104(RSP)
++	FMOVD F10, 112(RSP)
++	FMOVD F11, 120(RSP)
++	FMOVD F12, 128(RSP)
++	FMOVD F13, 136(RSP)
++	FMOVD F14, 144(RSP)
++	FMOVD F15, 152(RSP)
++	MOVD g, 160(RSP)
++
++	// Initialize g as null in case of using g later e.g. sigaction in cgo_sigaction.go
++	MOVD	ZR, g
++
++	MOVD	R0, _rt0_arm64_freebsd_lib_argc<>(SB)
++	MOVD	R1, _rt0_arm64_freebsd_lib_argv<>(SB)
++
++	// Synchronous initialization.
++	MOVD	$runtime·libpreinit(SB), R4
++	BL	(R4)
++
++	// Create a new thread to do the runtime initialization and return.
++	MOVD	_cgo_sys_thread_create(SB), R4
++	CMP	$0, R4
++	BEQ	nocgo
++	MOVD	$_rt0_arm64_freebsd_lib_go(SB), R0
++	MOVD	$0, R1
++	SUB	$16, RSP		// reserve 16 bytes for sp-8 where fp may be saved.
++	BL	(R4)
++	ADD	$16, RSP
++	B	restore
++
++nocgo:
++	MOVD	$0x800000, R0                     // stacksize = 8192KB
++	MOVD	$_rt0_arm64_freebsd_lib_go(SB), R1
++	MOVD	R0, 8(RSP)
++	MOVD	R1, 16(RSP)
++	MOVD	$runtime·newosproc0(SB),R4
++	BL	(R4)
++
++restore:
++	// Restore callee-save registers.
++	MOVD 24(RSP), R19
++	MOVD 32(RSP), R20
++	MOVD 40(RSP), R21
++	MOVD 48(RSP), R22
++	MOVD 56(RSP), R23
++	MOVD 64(RSP), R24
++	MOVD 72(RSP), R25
++	MOVD 80(RSP), R26
++	MOVD 88(RSP), R27
++	FMOVD 96(RSP), F8
++	FMOVD 104(RSP), F9
++	FMOVD 112(RSP), F10
++	FMOVD 120(RSP), F11
++	FMOVD 128(RSP), F12
++	FMOVD 136(RSP), F13
++	FMOVD 144(RSP), F14
++	FMOVD 152(RSP), F15
++	MOVD 160(RSP), g
++	RET
++
++TEXT _rt0_arm64_freebsd_lib_go(SB),NOSPLIT,$0
++	MOVD	_rt0_arm64_freebsd_lib_argc<>(SB), R0
++	MOVD	_rt0_arm64_freebsd_lib_argv<>(SB), R1
++	MOVD	$runtime·rt0_go(SB),R4
++	B       (R4)
++
++DATA _rt0_arm64_freebsd_lib_argc<>(SB)/8, $0
++GLOBL _rt0_arm64_freebsd_lib_argc<>(SB),NOPTR, $8
++DATA _rt0_arm64_freebsd_lib_argv<>(SB)/8, $0
++GLOBL _rt0_arm64_freebsd_lib_argv<>(SB),NOPTR, $8
++
++
++TEXT main(SB),NOSPLIT|NOFRAME,$0
++	MOVD	$runtime·rt0_go(SB), R2
++	BL	(R2)
++exit:
++	MOVD	$0, R0
++	MOVD	$1, R8	// SYS_exit
++	SVC
++	B	exit
+diff --git a/src/runtime/signal_arm64.go b/src/runtime/signal_arm64.go
+index 7a3b1ccbb8..c132f45e4b 100644
+--- a/src/runtime/signal_arm64.go
++++ b/src/runtime/signal_arm64.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-// +build darwin linux netbsd openbsd
++// +build darwin linux netbsd openbsd freebsd
+ 
+ package runtime
+ 
+diff --git a/src/runtime/signal_freebsd_arm64.go b/src/runtime/signal_freebsd_arm64.go
+new file mode 100644
+index 0000000000..3053914ebc
+--- /dev/null
++++ b/src/runtime/signal_freebsd_arm64.go
+@@ -0,0 +1,67 @@
++// Copyright 2019 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package runtime
++
++import "unsafe"
++
++type sigctxt struct {
++	info *siginfo
++	ctxt unsafe.Pointer
++}
++
++//go:nosplit
++//go:nowritebarrierrec
++func (c *sigctxt) regs() *mcontext { return &(*ucontext)(c.ctxt).uc_mcontext }
++
++func (c *sigctxt) r0() uint64  { return c.regs().mc_gpregs.gp_x[0] }
++func (c *sigctxt) r1() uint64  { return c.regs().mc_gpregs.gp_x[1] }
++func (c *sigctxt) r2() uint64  { return c.regs().mc_gpregs.gp_x[2] }
++func (c *sigctxt) r3() uint64  { return c.regs().mc_gpregs.gp_x[3] }
++func (c *sigctxt) r4() uint64  { return c.regs().mc_gpregs.gp_x[4] }
++func (c *sigctxt) r5() uint64  { return c.regs().mc_gpregs.gp_x[5] }
++func (c *sigctxt) r6() uint64  { return c.regs().mc_gpregs.gp_x[6] }
++func (c *sigctxt) r7() uint64  { return c.regs().mc_gpregs.gp_x[7] }
++func (c *sigctxt) r8() uint64  { return c.regs().mc_gpregs.gp_x[8] }
++func (c *sigctxt) r9() uint64  { return c.regs().mc_gpregs.gp_x[9] }
++func (c *sigctxt) r10() uint64 { return c.regs().mc_gpregs.gp_x[10] }
++func (c *sigctxt) r11() uint64 { return c.regs().mc_gpregs.gp_x[11] }
++func (c *sigctxt) r12() uint64 { return c.regs().mc_gpregs.gp_x[12] }
++func (c *sigctxt) r13() uint64 { return c.regs().mc_gpregs.gp_x[13] }
++func (c *sigctxt) r14() uint64 { return c.regs().mc_gpregs.gp_x[14] }
++func (c *sigctxt) r15() uint64 { return c.regs().mc_gpregs.gp_x[15] }
++func (c *sigctxt) r16() uint64 { return c.regs().mc_gpregs.gp_x[16] }
++func (c *sigctxt) r17() uint64 { return c.regs().mc_gpregs.gp_x[17] }
++func (c *sigctxt) r18() uint64 { return c.regs().mc_gpregs.gp_x[18] }
++func (c *sigctxt) r19() uint64 { return c.regs().mc_gpregs.gp_x[19] }
++func (c *sigctxt) r20() uint64 { return c.regs().mc_gpregs.gp_x[20] }
++func (c *sigctxt) r21() uint64 { return c.regs().mc_gpregs.gp_x[21] }
++func (c *sigctxt) r22() uint64 { return c.regs().mc_gpregs.gp_x[22] }
++func (c *sigctxt) r23() uint64 { return c.regs().mc_gpregs.gp_x[23] }
++func (c *sigctxt) r24() uint64 { return c.regs().mc_gpregs.gp_x[24] }
++func (c *sigctxt) r25() uint64 { return c.regs().mc_gpregs.gp_x[25] }
++func (c *sigctxt) r26() uint64 { return c.regs().mc_gpregs.gp_x[26] }
++func (c *sigctxt) r27() uint64 { return c.regs().mc_gpregs.gp_x[27] }
++func (c *sigctxt) r28() uint64 { return c.regs().mc_gpregs.gp_x[28] }
++func (c *sigctxt) r29() uint64 { return c.regs().mc_gpregs.gp_x[29] }
++func (c *sigctxt) lr() uint64  { return c.regs().mc_gpregs.gp_lr }
++func (c *sigctxt) sp() uint64  { return c.regs().mc_gpregs.gp_sp }
++
++//go:nosplit
++//go:nowritebarrierrec
++func (c *sigctxt) pc() uint64 { return c.regs().mc_gpregs.gp_elr }
++
++func (c *sigctxt) fault() uint64  { return c.info.si_addr }
++
++func (c *sigctxt) sigcode() uint64 { return uint64(c.info.si_code) }
++func (c *sigctxt) sigaddr() uint64 { return c.info.si_addr }
++
++func (c *sigctxt) set_pc(x uint64)  { c.regs().mc_gpregs.gp_elr = x }
++func (c *sigctxt) set_sp(x uint64)  { c.regs().mc_gpregs.gp_sp = x }
++func (c *sigctxt) set_lr(x uint64)  { c.regs().mc_gpregs.gp_lr = x }
++func (c *sigctxt) set_r28(x uint64) { c.regs().mc_gpregs.gp_x[28] = x }
++
++func (c *sigctxt) set_sigcode(x uint64) { c.info.si_code = int32(x) }
++func (c *sigctxt) set_sigaddr(x uint64) { c.info.si_addr = x }
++
+diff --git a/src/runtime/stubs_arm64.go b/src/runtime/stubs_arm64.go
+index 44c566e602..8a1c49cc0f 100644
+--- a/src/runtime/stubs_arm64.go
++++ b/src/runtime/stubs_arm64.go
+@@ -7,3 +7,4 @@ package runtime
+ // Called from assembly only; declared for go vet.
+ func load_g()
+ func save_g()
++func emptyfunc()
+diff --git a/src/runtime/sys_freebsd_arm64.s b/src/runtime/sys_freebsd_arm64.s
+new file mode 100644
+index 0000000000..b539380008
+--- /dev/null
++++ b/src/runtime/sys_freebsd_arm64.s
+@@ -0,0 +1,451 @@
++// Copyright 2019 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//
++// System calls and other sys.stuff for arm64, FreeBSD
++// /usr/src/sys/kern/syscalls.master for syscall numbers.
++//
++
++#include "go_asm.h"
++#include "go_tls.h"
++#include "textflag.h"
++
++#define CLOCK_REALTIME		0
++#define CLOCK_MONOTONIC		4
++#define FD_CLOEXEC		1
++#define F_SETFD			2
++
++#define SYS_exit			1
++#define SYS_read			3
++#define SYS_write			4
++#define SYS_open			5
++#define SYS_close			6
++#define SYS_getpid			20
++#define SYS_kill			37
++#define SYS_sigaltstack			53
++#define SYS_munmap			73
++#define SYS_madvise			75
++#define SYS_setitimer			83
++#define SYS_fcntl			92
++#define SYS___sysctl			202
++#define SYS_nanosleep			240
++#define SYS_clock_gettime		232
++#define SYS_sched_yield			331
++#define SYS_sigprocmask			340
++#define SYS_kqueue			362
++#define SYS_kevent			363
++#define SYS_sigaction			416
++#define SYS_thr_exit			431
++#define SYS_thr_self			432
++#define SYS_thr_kill			433
++#define SYS__umtx_op			454
++#define SYS_thr_new			455
++#define SYS_mmap			477
++#define SYS_cpuset_getaffinity		487
++
++// func sys_umtx_op(addr *uint32, mode int32, val uint32, uaddr1 uintptr, ut *umtx_time) int32
++TEXT runtime·sys_umtx_op(SB),NOSPLIT,$0
++	MOVD	addr+0(FP), R0
++	MOVW	mode+8(FP), R1
++	MOVW	val+12(FP), R2
++	MOVD	uaddr1+16(FP), R3
++	MOVD	ut+24(FP), R4
++	MOVD	$SYS__umtx_op, R8
++	SVC
++	MOVW	R0, ret+32(FP)
++	RET
++
++TEXT runtime·emptyfunc(SB),0,$0-0
++	RET
++
++// func thr_new(param *thrparam, size int32) int32
++TEXT runtime·thr_new(SB),NOSPLIT,$0
++	MOVD	param+0(FP), R0
++	MOVW	size+8(FP), R1
++	MOVD	$SYS_thr_new, R8
++	SVC
++	MOVW	R0, ret+16(FP)
++	RET
++
++// func thr_start()
++TEXT runtime·thr_start(SB),NOSPLIT,$0
++	// set up g
++	MOVD	m_g0(R0), g
++	MOVD	R0, g_m(g)
++	BL	runtime·emptyfunc(SB) // fault if stack check is wrong
++	BL	runtime·mstart(SB)
++
++	MOVD	$2, R8  // crash (not reached)
++	MOVD	R8, (R8)
++	RET
++
++// func exit(code int32)
++TEXT runtime·exit(SB),NOSPLIT|NOFRAME,$0-4
++	MOVW	code+0(FP), R0
++	MOVD	$SYS_exit, R8
++	SVC
++	MOVD	$0, R0
++	MOVD	R0, (R0)
++
++// func exitThread(wait *uint32)
++TEXT runtime·exitThread(SB),NOSPLIT|NOFRAME,$0-8
++	MOVD	wait+0(FP), R0
++	// We're done using the stack.
++	MOVW	$0, R1
++	STLRW	R1, (R0)
++	MOVW	$0, R0
++	MOVD	$SYS_thr_exit, R8
++	SVC
++	JMP	0(PC)
++
++// func open(name *byte, mode, perm int32) int32
++TEXT runtime·open(SB),NOSPLIT|NOFRAME,$0-20
++	MOVD	name+0(FP), R0		// arg 1 - pathname
++	MOVW	mode+8(FP), R1		// arg 2 - flags
++	MOVW	perm+12(FP), R2		// arg 3 - mode
++	MOVD	$SYS_open, R8
++	SVC
++	BCC	ok
++	MOVW	$-1, R0
++ok:
++	MOVW	R0, ret+16(FP)
++	RET
++
++// func closefd(fd int32) int32
++TEXT runtime·closefd(SB),NOSPLIT|NOFRAME,$0-12
++	MOVW	fd+0(FP), R0		// arg 1 - fd
++	MOVD	$SYS_close, R8
++	SVC
++	BCC	ok
++	MOVW	$-1, R0
++ok:
++	MOVW	R0, ret+8(FP)
++	RET
++
++// func write(fd uintptr, p unsafe.Pointer, n int32) int32
++TEXT runtime·write(SB),NOSPLIT|NOFRAME,$0-28
++	MOVD	fd+0(FP), R0
++	MOVD	p+8(FP), R1
++	MOVW	n+16(FP), R2
++	MOVD	$SYS_write, R8
++	SVC
++	BCC	ok
++	MOVW	$-1, R0
++ok:
++	MOVW	R0, ret+24(FP)
++	RET
++
++// func read(fd int32, p unsafe.Pointer, n int32) int32
++TEXT runtime·read(SB),NOSPLIT|NOFRAME,$0-28
++	MOVW	fd+0(FP), R0
++	MOVD	p+8(FP), R1
++	MOVW	n+16(FP), R2
++	MOVD	$SYS_read, R8
++	SVC
++	BCC	ok
++	MOVW	$-1, R0
++ok:
++	MOVW	R0, ret+24(FP)
++	RET
++
++// func usleep(usec uint32)
++TEXT runtime·usleep(SB),NOSPLIT,$24-4
++	MOVWU	usec+0(FP), R3
++	MOVD	R3, R5
++	MOVW	$1000000, R4
++	UDIV	R4, R3
++	MOVD	R3, 8(RSP)
++	MUL	R3, R4
++	SUB	R4, R5
++	MOVW	$1000, R4
++	MUL	R4, R5
++	MOVD	R5, 16(RSP)
++
++	// nanosleep(&ts, 0)
++	ADD	$8, RSP, R0
++	MOVD	$0, R1
++	MOVD	$SYS_nanosleep, R8
++	SVC
++	RET
++
++// func raise(sig uint32)
++TEXT runtime·raise(SB),NOSPLIT,$8
++	MOVD	$8(RSP), R0	// arg 1 &8(RSP)
++	MOVD	$SYS_thr_self, R8
++	SVC
++	MOVD	8(RSP), R0	// arg 1 pid
++	MOVW	sig+0(FP), R1	// arg 2 sig
++	MOVD	$SYS_thr_kill, R8
++	SVC
++	RET
++
++// func raiseproc(sig uint32)
++TEXT runtime·raiseproc(SB),NOSPLIT|NOFRAME,$0
++	MOVD	$SYS_getpid, R8
++	SVC
++	 			// arg 1 pid (from getpid)
++	MOVW	sig+0(FP), R1	// arg 2 - sig
++	MOVD	$SYS_kill, R8
++	SVC
++	RET
++
++// func setitimer(mode int32, new, old *itimerval)
++TEXT runtime·setitimer(SB),NOSPLIT|NOFRAME,$0-24
++	MOVW	mode+0(FP), R0
++	MOVD	new+8(FP), R1
++	MOVD	old+16(FP), R2
++	MOVD	$SYS_setitimer, R8
++	SVC
++	RET
++
++// func fallback_walltime() (sec int64, nsec int32)
++TEXT runtime·fallback_walltime(SB),NOSPLIT,$24-12
++	MOVW	$CLOCK_REALTIME, R0
++	MOVD	$8(RSP), R1
++	MOVD	$SYS_clock_gettime, R8
++	SVC
++	MOVD	8(RSP), R0	// sec
++	MOVW	16(RSP), R1	// nsec
++	MOVD	R0, sec+0(FP)
++	MOVW	R1, nsec+8(FP)
++	RET
++
++// func fallback_nanotime() int64
++TEXT runtime·fallback_nanotime(SB),NOSPLIT,$24-8
++	MOVD	$CLOCK_MONOTONIC, R0
++	MOVD	$8(RSP), R1
++	MOVD	$SYS_clock_gettime, R8
++	SVC
++	MOVD	8(RSP), R0	// sec
++	MOVW	16(RSP), R2	// nsec
++
++	// sec is in R0, nsec in R2
++	// return nsec in R2
++	MOVD	$1000000000, R3
++	MUL	R3, R0
++	ADD	R2, R0
++
++	MOVD	R0, ret+0(FP)
++	RET
++
++// func asmSigaction(sig uintptr, new, old *sigactiont) int32
++TEXT runtime·asmSigaction(SB),NOSPLIT|NOFRAME,$0
++	MOVD	sig+0(FP), R0		// arg 1 sig
++	MOVD	new+8(FP), R1		// arg 2 act
++	MOVD	old+16(FP), R2		// arg 3 oact
++	MOVD	$SYS_sigaction, R8
++	SVC
++	BCC	ok
++	MOVW	$-1, R0
++ok:
++	MOVW	R0, ret+24(FP)
++	RET
++
++// func sigfwd(fn uintptr, sig uint32, info *siginfo, ctx unsafe.Pointer)
++TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
++	MOVW	sig+8(FP), R0
++	MOVD	info+16(FP), R1
++	MOVD	ctx+24(FP), R2
++	MOVD	fn+0(FP), R11
++	BL	(R11)
++	RET
++
++// func sigtramp()
++TEXT runtime·sigtramp(SB),NOSPLIT,$24
++	// this might be called in external code context,
++	// where g is not set.
++	// first save R0, because runtime·load_g will clobber it
++	MOVW	R0, 8(RSP)
++	MOVBU	runtime·iscgo(SB), R0
++	CMP	$0, R0
++	BEQ	2(PC)
++	BL	runtime·load_g(SB)
++
++	MOVD	R1, 16(RSP)
++	MOVD	R2, 24(RSP)
++	BL	runtime·sigtrampgo(SB)
++	RET
++
++// func mmap(addr uintptr, length uintptr, prot int, flag int, fd int, pos int64) (ret uintptr, err error)
++TEXT runtime·mmap(SB),NOSPLIT|NOFRAME,$0
++	MOVD	addr+0(FP), R0		// arg 1 - addr
++	MOVD	n+8(FP), R1		// arg 2 - len
++	MOVW	prot+16(FP), R2		// arg 3 - prot
++	MOVW	flags+20(FP), R3	// arg 4 - flags
++	MOVW	fd+24(FP), R4		// arg 5 - fd
++	MOVW	off+28(FP), R5		// arg 6 - offset
++	MOVD	$SYS_mmap, R8
++	SVC
++	BCS	fail
++	MOVD	R0, p+32(FP)
++	MOVD	$0, err+40(FP)
++	RET
++fail:
++	MOVD	$0, p+32(FP)
++	MOVD	R0, err+40(FP)
++	RET
++
++// func munmap(addr uintptr, length uintptr) (err error)
++TEXT runtime·munmap(SB),NOSPLIT|NOFRAME,$0
++	MOVD	addr+0(FP), R0	// arg 1 - addr
++	MOVD	n+8(FP), R1	// arg 2 - len
++	MOVD	$SYS_munmap, R8
++	SVC
++	BCS	fail
++	RET
++fail:
++	MOVD	$0, R0
++	MOVD	R0, (R0)	// crash
++
++// func madvise(addr unsafe.Pointer, n uintptr, flags int32) int32
++TEXT runtime·madvise(SB),NOSPLIT|NOFRAME,$0
++	MOVD	addr+0(FP), R0		// arg 1 - addr
++	MOVD	n+8(FP), R1		// arg 2 - len
++	MOVW	flags+16(FP), R2	// arg 3 - behav
++	MOVD	$SYS_madvise, R8
++	SVC
++	BCC	ok
++	MOVW	$-1, R0
++ok:
++	MOVW	R0, ret+24(FP)
++	RET
++
++// func sysctl(mib *uint32, miblen uint32, out *byte, size *uintptr, dst *byte, ndst uintptr) int32
++TEXT runtime·sysctl(SB),NOSPLIT,$0
++	MOVD	mib+0(FP), R0		// arg 1 - name
++	MOVW	miblen+8(FP), R1	// arg 2 - namelen
++	MOVD	out+16(FP), R2		// arg 3 - oldp
++	MOVD	size+24(FP), R3		// arg 4 - oldlenp
++	MOVD	dst+32(FP), R4		// arg 5 - newp
++	MOVD	ndst+40(FP), R5		// arg 6 - newlen
++	MOVD	$SYS___sysctl, R8
++	SVC
++	BCC	ok
++	NEG	R0, R0
++ok:
++	MOVW	R0, ret+48(FP)
++	RET
++
++// func sigaltstack(new, old *stackt)
++TEXT runtime·sigaltstack(SB),NOSPLIT|NOFRAME,$0
++	MOVD	new+0(FP), R0		// arg 1 - nss
++	MOVD	old+8(FP), R1		// arg 2 - oss
++	MOVD	$SYS_sigaltstack, R8
++	SVC
++	BCS	fail
++	RET
++fail:
++	MOVD	$0, R0
++	MOVD	R0, (R0)	// crash
++
++// func osyield()
++TEXT runtime·osyield(SB),NOSPLIT|NOFRAME,$0
++	MOVD	$SYS_sched_yield, R8
++	SVC
++	RET
++
++// func sigprocmask(how int32, new, old *sigset)
++TEXT runtime·sigprocmask(SB),NOSPLIT|NOFRAME,$0-24
++	MOVW	how+0(FP), R0
++	MOVD	new+8(FP), R1
++	MOVD	old+16(FP), R2
++	MOVD	$SYS_sigprocmask, R8
++	SVC
++	BCS	fail
++	RET
++fail:
++	MOVD	$0, R0
++	MOVD	R0, (R0)		// crash
++
++// func cpuset_getaffinity(level int, which int, id int64, size int, mask *byte) int32
++TEXT runtime·cpuset_getaffinity(SB),NOSPLIT|NOFRAME,$0-44
++	MOVD	level+0(FP), R0
++	MOVD	which+8(FP), R1
++	MOVD	id+16(FP), R2
++	MOVD	size+24(FP), R3
++	MOVD	mask+32(FP), R4
++	MOVD	$SYS_cpuset_getaffinity, R8
++	SVC
++	BCC	ok
++	MOVW	$-1, R0
++ok:
++	MOVW	R0, ret+40(FP)
++	RET
++
++// func kqueue() int32
++TEXT runtime·kqueue(SB),NOSPLIT|NOFRAME,$0
++	MOVD	$SYS_kqueue, R8
++	SVC
++	BCC	ok
++	MOVW	$-1, R0
++ok:
++	MOVW	R0, ret+0(FP)
++	RET
++
++// func kevent(kq int, change unsafe.Pointer, nchange int, event unsafe.Pointer, nevent int, timeout *Timespec) (n int, err error)
++TEXT runtime·kevent(SB),NOSPLIT,$0
++	MOVW	kq+0(FP), R0	// arg 1 - kq
++	MOVD	ch+8(FP), R1	// arg 2 - changelist
++	MOVW	nch+16(FP), R2	// arg 3 - nchanges
++	MOVD	ev+24(FP), R3	// arg 4 - eventlist
++	MOVW	nev+32(FP), R4	// arg 5 - nevents
++	MOVD	ts+40(FP), R5	// arg 6 - timeout
++	MOVD	$SYS_kevent, R8
++	SVC
++	BCC	ok
++	NEG	R0, R0
++ok:
++	MOVW	R0, ret+48(FP)
++	RET
++
++// func closeonexec(fd int32)
++TEXT runtime·closeonexec(SB),NOSPLIT|NOFRAME,$0
++	MOVW	fd+0(FP), R0  // fd
++	MOVD	$F_SETFD, R1
++	MOVD	$FD_CLOEXEC, R2
++	MOVD	$SYS_fcntl, R8
++	SVC
++	RET
++
++// func getCntxct(physical bool) uint32
++TEXT runtime·getCntxct(SB),NOSPLIT,$0
++	MOVB	physical+0(FP), R0
++	CMP	$0, R0
++	BEQ	3(PC)
++
++	// get CNTPCT (Physical Count Register) into x0
++	// mrs x0, cntpct_el0 = d53be020
++	WORD	$0xd53be020 // SIGILL
++	B	2(PC)
++
++	// get CNTVCT (Virtual Count Register) into x0
++	// mrs x0, cntvct_el0 = d53be040
++	WORD	$0xd53be040
++
++	MOVW	R0, ret+8(FP)
++	RET
++
++// func getisar0() uint64
++TEXT runtime·getisar0(SB),NOSPLIT,$0
++	// get Instruction Set Attributes 0 into x0
++	// mrs x0, ID_AA64ISAR0_EL1 = d5380600
++	WORD	$0xd5380600
++	MOVD	R0, ret+0(FP)
++	RET
++
++// func getisar1() uint64
++TEXT runtime·getisar1(SB),NOSPLIT,$0
++	// get Instruction Set Attributes 1 into x0
++	// mrs x0, ID_AA64ISAR1_EL1 = d5380620
++	WORD	$0xd5380620
++	MOVD	R0, ret+0(FP)
++	RET
++
++// func getpfr0() uint64
++TEXT runtime·getpfr0(SB),NOSPLIT,$0
++	// get Processor Feature Register 0 into x0
++	// mrs x0, ID_AA64PFR0_EL1 = d5380400
++	WORD	$0xd5380400
++	MOVD	R0, ret+0(FP)
++	RET
+diff --git a/src/runtime/tls_arm64.h b/src/runtime/tls_arm64.h
+index 27f517c155..646ad9a29c 100644
+--- a/src/runtime/tls_arm64.h
++++ b/src/runtime/tls_arm64.h
+@@ -30,6 +30,11 @@
+ #define MRS_TPIDR_R0 WORD $0xd53bd040 // MRS TPIDR_EL0, R0
+ #endif
+ 
++#ifdef GOOS_freebsd
++#define TPIDR TPIDR_EL0
++#define MRS_TPIDR_R0 WORD $0xd53bd040 // MRS TPIDR_EL0, R0
++#endif
++
+ // Define something that will break the build if
+ // the GOOS is unknown.
+ #ifndef TPIDR
+diff --git a/src/runtime/vdso_freebsd_arm64.go b/src/runtime/vdso_freebsd_arm64.go
+new file mode 100644
+index 0000000000..7b6f2129f6
+--- /dev/null
++++ b/src/runtime/vdso_freebsd_arm64.go
+@@ -0,0 +1,21 @@
++// Copyright 2018 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package runtime
++
++const (
++	_VDSO_TH_ALGO_ARM_GENTIM = 1
++)
++
++func getCntxct(physical bool) uint32
++
++//go:nosplit
++func (th *vdsoTimehands) getTimecounter() (uint32, bool) {
++	switch th.algo {
++	case _VDSO_TH_ALGO_ARM_GENTIM:
++		return getCntxct(false), true
++	default:
++		return 0, false
++	}
++}
+diff --git a/src/syscall/asm_freebsd_arm64.s b/src/syscall/asm_freebsd_arm64.s
+new file mode 100644
+index 0000000000..7f89b40fdc
+--- /dev/null
++++ b/src/syscall/asm_freebsd_arm64.s
+@@ -0,0 +1,129 @@
++// Copyright 2019 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++#include "textflag.h"
++
++//
++// System call support for ARM64, FreeBSD
++//
++
++#define	SYS_syscall	0
++
++// func Syscall(trap uintptr, a1, a2, a3 uintptr) (r1, r2, err uintptr)
++TEXT	·Syscall(SB),NOSPLIT,$0-56
++	BL	runtime·entersyscall(SB)
++	MOVD	trap+0(FP), R8	// syscall entry
++	MOVD	a1+8(FP), R0
++	MOVD	a2+16(FP), R1
++	MOVD	a3+24(FP), R2
++	SVC	$SYS_syscall
++	BCC	ok
++	MOVD	$-1, R1
++	MOVD	R1, r1+32(FP)	// r1
++	MOVD	ZR, r2+40(FP)	// r2
++	MOVD	R0, err+48(FP)	// err
++	BL	runtime·exitsyscall(SB)
++	RET
++ok:
++	MOVD	R0, r1+32(FP) // r1
++	MOVD	R1, r2+40(FP)	// r2
++	MOVD	ZR, err+48(FP)	// err
++	BL	runtime·exitsyscall(SB)
++	RET
++
++// func RawSyscall(trap uintptr, a1, a2, a3 uintptr) (r1, r2, err uintptr)
++TEXT ·RawSyscall(SB),NOSPLIT,$0-56
++	MOVD	trap+0(FP), R8	// syscall entry
++	MOVD	a1+8(FP), R0
++	MOVD	a2+16(FP), R1
++	MOVD	a3+24(FP), R2
++	SVC	$SYS_syscall
++	BCC	ok
++	MOVD	$-1, R1
++	MOVD	R1, r1+32(FP)	// r1
++	MOVD	ZR, r2+40(FP)	// r2
++	MOVD	R0, err+48(FP)	// err
++	RET
++ok:
++	MOVD	R0, r1+32(FP) // r1
++	MOVD	R1, r2+40(FP)	// r2
++	MOVD	ZR, err+48(FP)	// err
++	RET
++
++// func Syscall6(trap uintptr, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2, err uintptr)
++TEXT	·Syscall6(SB),NOSPLIT,$0-80
++	BL	runtime·entersyscall(SB)
++	MOVD	trap+0(FP), R8	// syscall entry
++	MOVD	a1+8(FP), R0
++	MOVD	a2+16(FP), R1
++	MOVD	a3+24(FP), R2
++	MOVD	a4+32(FP), R3
++	MOVD	a5+40(FP), R4
++	MOVD	a6+48(FP), R5
++	SVC	$SYS_syscall
++	BCC	ok
++	MOVD	$-1, R1
++	MOVD	R1, r1+56(FP)	// r1
++	MOVD	ZR, r2+64(FP)	// r2
++	MOVD	R0, err+72(FP)	// err
++	BL	runtime·exitsyscall(SB)
++	RET
++ok:
++	MOVD	R0, r1+56(FP) // r1
++	MOVD	R1, r2+64(FP)	// r2
++	MOVD	ZR, err+72(FP)	// err
++	BL	runtime·exitsyscall(SB)
++	RET
++
++// func RawSyscall6(trap uintptr, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2, err uintptr)
++TEXT	·RawSyscall6(SB),NOSPLIT,$0-80
++	MOVD	trap+0(FP), R8	// syscall entry
++	MOVD	a1+8(FP), R0
++	MOVD	a2+16(FP), R1
++	MOVD	a3+24(FP), R2
++	MOVD	a4+32(FP), R3
++	MOVD	a5+40(FP), R4
++	MOVD	a6+48(FP), R5
++	SVC	$SYS_syscall
++	BCC	ok
++	MOVD	$-1, R1
++	MOVD	R1, r1+56(FP)	// r1
++	MOVD	ZR, r2+64(FP)	// r2
++	MOVD	R0, err+72(FP)	// err
++	RET
++ok:
++	MOVD	R0, r1+56(FP) // r1
++	MOVD	R1, r2+64(FP)	// r2
++	MOVD	ZR, R0
++	MOVD	R0, err+72(FP)	// err
++	RET
++
++// Actually Syscall7
++TEXT	·Syscall9(SB),NOSPLIT,$0-104
++	BL	runtime·entersyscall(SB)
++	MOVD	num+0(FP), R8	// syscall entry
++	MOVD	a1+8(FP), R0
++	MOVD	a2+16(FP), R1
++	MOVD	a3+24(FP), R2
++	MOVD	a4+32(FP), R3
++	MOVD	a5+40(FP), R4
++	MOVD	a6+48(FP), R5
++	MOVD	a7+56(FP), R6
++	//MOVD	a8+64(FP), R7
++	//MOVD	a9+72(FP), R8
++	SVC	$SYS_syscall
++	BCC	ok
++	MOVD	$-1, R1
++	MOVD	R1, r1+80(FP)	// r1
++	MOVD	ZR, r2+88(FP)	// r2
++	MOVD	R0, err+96(FP)	// err
++	BL	runtime·exitsyscall(SB)
++	RET
++ok:
++	MOVD	R0, r1+80(FP) // r1
++	MOVD	R1, r2+88(FP)	// r2
++	MOVD	ZR, err+96(FP)	// err
++	BL	runtime·exitsyscall(SB)
++	RET
++
+diff --git a/src/syscall/route_freebsd_64bit.go b/src/syscall/route_freebsd_64bit.go
+index 728837ebb5..e70ba3df89 100644
+--- a/src/syscall/route_freebsd_64bit.go
++++ b/src/syscall/route_freebsd_64bit.go
+@@ -2,7 +2,7 @@
+ // Use of this source code is governed by a BSD-style
+ // license that can be found in the LICENSE file.
+ 
+-// +build freebsd,amd64
++// +build freebsd,amd64 freebsd,arm64
+ 
+ package syscall
+ 
+diff --git a/src/syscall/syscall_freebsd_arm64.go b/src/syscall/syscall_freebsd_arm64.go
+new file mode 100644
+index 0000000000..bb6130dbd2
+--- /dev/null
++++ b/src/syscall/syscall_freebsd_arm64.go
+@@ -0,0 +1,47 @@
++// Copyright 2009 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package syscall
++
++import "unsafe"
++
++func setTimespec(sec, nsec int64) Timespec {
++	return Timespec{Sec: sec, Nsec: nsec}
++}
++
++func setTimeval(sec, usec int64) Timeval {
++	return Timeval{Sec: sec, Usec: usec}
++}
++
++func SetKevent(k *Kevent_t, fd, mode, flags int) {
++	k.Ident = uint64(fd)
++	k.Filter = int16(mode)
++	k.Flags = uint16(flags)
++}
++
++func (iov *Iovec) SetLen(length int) {
++	iov.Len = uint64(length)
++}
++
++func (msghdr *Msghdr) SetControllen(length int) {
++	msghdr.Controllen = uint32(length)
++}
++
++func (cmsg *Cmsghdr) SetLen(length int) {
++	cmsg.Len = uint32(length)
++}
++
++func sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) {
++	var writtenOut uint64 = 0
++	_, _, e1 := Syscall9(SYS_SENDFILE, uintptr(infd), uintptr(outfd), uintptr(*offset), uintptr(count), 0, uintptr(unsafe.Pointer(&writtenOut)), 0, 0, 0)
++
++	written = int(writtenOut)
++
++	if e1 != 0 {
++		err = e1
++	}
++	return
++}
++
++func Syscall9(num, a1, a2, a3, a4, a5, a6, a7, a8, a9 uintptr) (r1, r2 uintptr, err Errno)
+diff --git a/src/syscall/zerrors_freebsd_arm64.go b/src/syscall/zerrors_freebsd_arm64.go
+new file mode 100644
+index 0000000000..561efa9308
+--- /dev/null
++++ b/src/syscall/zerrors_freebsd_arm64.go
+@@ -0,0 +1,1718 @@
++// mkerrors.sh -m64
++// Code generated by the command above; DO NOT EDIT.
++
++// Created by cgo -godefs - DO NOT EDIT
++// cgo -godefs -- -m64 _const.go
++
++// +build arm64,freebsd
++
++package syscall
++
++const (
++	AF_APPLETALK                      = 0x10
++	AF_ARP                            = 0x23
++	AF_ATM                            = 0x1e
++	AF_BLUETOOTH                      = 0x24
++	AF_CCITT                          = 0xa
++	AF_CHAOS                          = 0x5
++	AF_CNT                            = 0x15
++	AF_COIP                           = 0x14
++	AF_DATAKIT                        = 0x9
++	AF_DECnet                         = 0xc
++	AF_DLI                            = 0xd
++	AF_E164                           = 0x1a
++	AF_ECMA                           = 0x8
++	AF_HYLINK                         = 0xf
++	AF_IEEE80211                      = 0x25
++	AF_IMPLINK                        = 0x3
++	AF_INET                           = 0x2
++	AF_INET6                          = 0x1c
++	AF_INET6_SDP                      = 0x2a
++	AF_INET_SDP                       = 0x28
++	AF_IPX                            = 0x17
++	AF_ISDN                           = 0x1a
++	AF_ISO                            = 0x7
++	AF_LAT                            = 0xe
++	AF_LINK                           = 0x12
++	AF_LOCAL                          = 0x1
++	AF_MAX                            = 0x2a
++	AF_NATM                           = 0x1d
++	AF_NETBIOS                        = 0x6
++	AF_NETGRAPH                       = 0x20
++	AF_OSI                            = 0x7
++	AF_PUP                            = 0x4
++	AF_ROUTE                          = 0x11
++	AF_SCLUSTER                       = 0x22
++	AF_SIP                            = 0x18
++	AF_SLOW                           = 0x21
++	AF_SNA                            = 0xb
++	AF_UNIX                           = 0x1
++	AF_UNSPEC                         = 0x0
++	AF_VENDOR00                       = 0x27
++	AF_VENDOR01                       = 0x29
++	AF_VENDOR02                       = 0x2b
++	AF_VENDOR03                       = 0x2d
++	AF_VENDOR04                       = 0x2f
++	AF_VENDOR05                       = 0x31
++	AF_VENDOR06                       = 0x33
++	AF_VENDOR07                       = 0x35
++	AF_VENDOR08                       = 0x37
++	AF_VENDOR09                       = 0x39
++	AF_VENDOR10                       = 0x3b
++	AF_VENDOR11                       = 0x3d
++	AF_VENDOR12                       = 0x3f
++	AF_VENDOR13                       = 0x41
++	AF_VENDOR14                       = 0x43
++	AF_VENDOR15                       = 0x45
++	AF_VENDOR16                       = 0x47
++	AF_VENDOR17                       = 0x49
++	AF_VENDOR18                       = 0x4b
++	AF_VENDOR19                       = 0x4d
++	AF_VENDOR20                       = 0x4f
++	AF_VENDOR21                       = 0x51
++	AF_VENDOR22                       = 0x53
++	AF_VENDOR23                       = 0x55
++	AF_VENDOR24                       = 0x57
++	AF_VENDOR25                       = 0x59
++	AF_VENDOR26                       = 0x5b
++	AF_VENDOR27                       = 0x5d
++	AF_VENDOR28                       = 0x5f
++	AF_VENDOR29                       = 0x61
++	AF_VENDOR30                       = 0x63
++	AF_VENDOR31                       = 0x65
++	AF_VENDOR32                       = 0x67
++	AF_VENDOR33                       = 0x69
++	AF_VENDOR34                       = 0x6b
++	AF_VENDOR35                       = 0x6d
++	AF_VENDOR36                       = 0x6f
++	AF_VENDOR37                       = 0x71
++	AF_VENDOR38                       = 0x73
++	AF_VENDOR39                       = 0x75
++	AF_VENDOR40                       = 0x77
++	AF_VENDOR41                       = 0x79
++	AF_VENDOR42                       = 0x7b
++	AF_VENDOR43                       = 0x7d
++	AF_VENDOR44                       = 0x7f
++	AF_VENDOR45                       = 0x81
++	AF_VENDOR46                       = 0x83
++	AF_VENDOR47                       = 0x85
++	B0                                = 0x0
++	B110                              = 0x6e
++	B115200                           = 0x1c200
++	B1200                             = 0x4b0
++	B134                              = 0x86
++	B14400                            = 0x3840
++	B150                              = 0x96
++	B1800                             = 0x708
++	B19200                            = 0x4b00
++	B200                              = 0xc8
++	B230400                           = 0x38400
++	B2400                             = 0x960
++	B28800                            = 0x7080
++	B300                              = 0x12c
++	B38400                            = 0x9600
++	B460800                           = 0x70800
++	B4800                             = 0x12c0
++	B50                               = 0x32
++	B57600                            = 0xe100
++	B600                              = 0x258
++	B7200                             = 0x1c20
++	B75                               = 0x4b
++	B76800                            = 0x12c00
++	B921600                           = 0xe1000
++	B9600                             = 0x2580
++	BIOCFEEDBACK                      = 0x8004427c
++	BIOCFLUSH                         = 0x20004268
++	BIOCGBLEN                         = 0x40044266
++	BIOCGDIRECTION                    = 0x40044276
++	BIOCGDLT                          = 0x4004426a
++	BIOCGDLTLIST                      = 0xc0104279
++	BIOCGETBUFMODE                    = 0x4004427d
++	BIOCGETIF                         = 0x4020426b
++	BIOCGETZMAX                       = 0x4008427f
++	BIOCGHDRCMPLT                     = 0x40044274
++	BIOCGRSIG                         = 0x40044272
++	BIOCGRTIMEOUT                     = 0x4010426e
++	BIOCGSEESENT                      = 0x40044276
++	BIOCGSTATS                        = 0x4008426f
++	BIOCGTSTAMP                       = 0x40044283
++	BIOCIMMEDIATE                     = 0x80044270
++	BIOCLOCK                          = 0x2000427a
++	BIOCPROMISC                       = 0x20004269
++	BIOCROTZBUF                       = 0x40184280
++	BIOCSBLEN                         = 0xc0044266
++	BIOCSDIRECTION                    = 0x80044277
++	BIOCSDLT                          = 0x80044278
++	BIOCSETBUFMODE                    = 0x8004427e
++	BIOCSETF                          = 0x80104267
++	BIOCSETFNR                        = 0x80104282
++	BIOCSETIF                         = 0x8020426c
++	BIOCSETWF                         = 0x8010427b
++	BIOCSETZBUF                       = 0x80184281
++	BIOCSHDRCMPLT                     = 0x80044275
++	BIOCSRSIG                         = 0x80044273
++	BIOCSRTIMEOUT                     = 0x8010426d
++	BIOCSSEESENT                      = 0x80044277
++	BIOCSTSTAMP                       = 0x80044284
++	BIOCVERSION                       = 0x40044271
++	BPF_A                             = 0x10
++	BPF_ABS                           = 0x20
++	BPF_ADD                           = 0x0
++	BPF_ALIGNMENT                     = 0x8
++	BPF_ALU                           = 0x4
++	BPF_AND                           = 0x50
++	BPF_B                             = 0x10
++	BPF_BUFMODE_BUFFER                = 0x1
++	BPF_BUFMODE_ZBUF                  = 0x2
++	BPF_DIV                           = 0x30
++	BPF_H                             = 0x8
++	BPF_IMM                           = 0x0
++	BPF_IND                           = 0x40
++	BPF_JA                            = 0x0
++	BPF_JEQ                           = 0x10
++	BPF_JGE                           = 0x30
++	BPF_JGT                           = 0x20
++	BPF_JMP                           = 0x5
++	BPF_JSET                          = 0x40
++	BPF_K                             = 0x0
++	BPF_LD                            = 0x0
++	BPF_LDX                           = 0x1
++	BPF_LEN                           = 0x80
++	BPF_LSH                           = 0x60
++	BPF_MAJOR_VERSION                 = 0x1
++	BPF_MAXBUFSIZE                    = 0x80000
++	BPF_MAXINSNS                      = 0x200
++	BPF_MEM                           = 0x60
++	BPF_MEMWORDS                      = 0x10
++	BPF_MINBUFSIZE                    = 0x20
++	BPF_MINOR_VERSION                 = 0x1
++	BPF_MISC                          = 0x7
++	BPF_MSH                           = 0xa0
++	BPF_MUL                           = 0x20
++	BPF_NEG                           = 0x80
++	BPF_OR                            = 0x40
++	BPF_RELEASE                       = 0x30bb6
++	BPF_RET                           = 0x6
++	BPF_RSH                           = 0x70
++	BPF_ST                            = 0x2
++	BPF_STX                           = 0x3
++	BPF_SUB                           = 0x10
++	BPF_TAX                           = 0x0
++	BPF_TXA                           = 0x80
++	BPF_T_BINTIME                     = 0x2
++	BPF_T_BINTIME_FAST                = 0x102
++	BPF_T_BINTIME_MONOTONIC           = 0x202
++	BPF_T_BINTIME_MONOTONIC_FAST      = 0x302
++	BPF_T_FAST                        = 0x100
++	BPF_T_FLAG_MASK                   = 0x300
++	BPF_T_FORMAT_MASK                 = 0x3
++	BPF_T_MICROTIME                   = 0x0
++	BPF_T_MICROTIME_FAST              = 0x100
++	BPF_T_MICROTIME_MONOTONIC         = 0x200
++	BPF_T_MICROTIME_MONOTONIC_FAST    = 0x300
++	BPF_T_MONOTONIC                   = 0x200
++	BPF_T_MONOTONIC_FAST              = 0x300
++	BPF_T_NANOTIME                    = 0x1
++	BPF_T_NANOTIME_FAST               = 0x101
++	BPF_T_NANOTIME_MONOTONIC          = 0x201
++	BPF_T_NANOTIME_MONOTONIC_FAST     = 0x301
++	BPF_T_NONE                        = 0x3
++	BPF_T_NORMAL                      = 0x0
++	BPF_W                             = 0x0
++	BPF_X                             = 0x8
++	BRKINT                            = 0x2
++	CFLUSH                            = 0xf
++	CLOCAL                            = 0x8000
++	CREAD                             = 0x800
++	CS5                               = 0x0
++	CS6                               = 0x100
++	CS7                               = 0x200
++	CS8                               = 0x300
++	CSIZE                             = 0x300
++	CSTART                            = 0x11
++	CSTATUS                           = 0x14
++	CSTOP                             = 0x13
++	CSTOPB                            = 0x400
++	CSUSP                             = 0x1a
++	CTL_MAXNAME                       = 0x18
++	CTL_NET                           = 0x4
++	DLT_A429                          = 0xb8
++	DLT_A653_ICM                      = 0xb9
++	DLT_AIRONET_HEADER                = 0x78
++	DLT_AOS                           = 0xde
++	DLT_APPLE_IP_OVER_IEEE1394        = 0x8a
++	DLT_ARCNET                        = 0x7
++	DLT_ARCNET_LINUX                  = 0x81
++	DLT_ATM_CLIP                      = 0x13
++	DLT_ATM_RFC1483                   = 0xb
++	DLT_AURORA                        = 0x7e
++	DLT_AX25                          = 0x3
++	DLT_AX25_KISS                     = 0xca
++	DLT_BACNET_MS_TP                  = 0xa5
++	DLT_BLUETOOTH_HCI_H4              = 0xbb
++	DLT_BLUETOOTH_HCI_H4_WITH_PHDR    = 0xc9
++	DLT_CAN20B                        = 0xbe
++	DLT_CAN_SOCKETCAN                 = 0xe3
++	DLT_CHAOS                         = 0x5
++	DLT_CHDLC                         = 0x68
++	DLT_CISCO_IOS                     = 0x76
++	DLT_C_HDLC                        = 0x68
++	DLT_C_HDLC_WITH_DIR               = 0xcd
++	DLT_DBUS                          = 0xe7
++	DLT_DECT                          = 0xdd
++	DLT_DOCSIS                        = 0x8f
++	DLT_DVB_CI                        = 0xeb
++	DLT_ECONET                        = 0x73
++	DLT_EN10MB                        = 0x1
++	DLT_EN3MB                         = 0x2
++	DLT_ENC                           = 0x6d
++	DLT_ERF                           = 0xc5
++	DLT_ERF_ETH                       = 0xaf
++	DLT_ERF_POS                       = 0xb0
++	DLT_FC_2                          = 0xe0
++	DLT_FC_2_WITH_FRAME_DELIMS        = 0xe1
++	DLT_FDDI                          = 0xa
++	DLT_FLEXRAY                       = 0xd2
++	DLT_FRELAY                        = 0x6b
++	DLT_FRELAY_WITH_DIR               = 0xce
++	DLT_GCOM_SERIAL                   = 0xad
++	DLT_GCOM_T1E1                     = 0xac
++	DLT_GPF_F                         = 0xab
++	DLT_GPF_T                         = 0xaa
++	DLT_GPRS_LLC                      = 0xa9
++	DLT_GSMTAP_ABIS                   = 0xda
++	DLT_GSMTAP_UM                     = 0xd9
++	DLT_HHDLC                         = 0x79
++	DLT_IBM_SN                        = 0x92
++	DLT_IBM_SP                        = 0x91
++	DLT_IEEE802                       = 0x6
++	DLT_IEEE802_11                    = 0x69
++	DLT_IEEE802_11_RADIO              = 0x7f
++	DLT_IEEE802_11_RADIO_AVS          = 0xa3
++	DLT_IEEE802_15_4                  = 0xc3
++	DLT_IEEE802_15_4_LINUX            = 0xbf
++	DLT_IEEE802_15_4_NOFCS            = 0xe6
++	DLT_IEEE802_15_4_NONASK_PHY       = 0xd7
++	DLT_IEEE802_16_MAC_CPS            = 0xbc
++	DLT_IEEE802_16_MAC_CPS_RADIO      = 0xc1
++	DLT_IPFILTER                      = 0x74
++	DLT_IPMB                          = 0xc7
++	DLT_IPMB_LINUX                    = 0xd1
++	DLT_IPNET                         = 0xe2
++	DLT_IPOIB                         = 0xf2
++	DLT_IPV4                          = 0xe4
++	DLT_IPV6                          = 0xe5
++	DLT_IP_OVER_FC                    = 0x7a
++	DLT_JUNIPER_ATM1                  = 0x89
++	DLT_JUNIPER_ATM2                  = 0x87
++	DLT_JUNIPER_ATM_CEMIC             = 0xee
++	DLT_JUNIPER_CHDLC                 = 0xb5
++	DLT_JUNIPER_ES                    = 0x84
++	DLT_JUNIPER_ETHER                 = 0xb2
++	DLT_JUNIPER_FIBRECHANNEL          = 0xea
++	DLT_JUNIPER_FRELAY                = 0xb4
++	DLT_JUNIPER_GGSN                  = 0x85
++	DLT_JUNIPER_ISM                   = 0xc2
++	DLT_JUNIPER_MFR                   = 0x86
++	DLT_JUNIPER_MLFR                  = 0x83
++	DLT_JUNIPER_MLPPP                 = 0x82
++	DLT_JUNIPER_MONITOR               = 0xa4
++	DLT_JUNIPER_PIC_PEER              = 0xae
++	DLT_JUNIPER_PPP                   = 0xb3
++	DLT_JUNIPER_PPPOE                 = 0xa7
++	DLT_JUNIPER_PPPOE_ATM             = 0xa8
++	DLT_JUNIPER_SERVICES              = 0x88
++	DLT_JUNIPER_SRX_E2E               = 0xe9
++	DLT_JUNIPER_ST                    = 0xc8
++	DLT_JUNIPER_VP                    = 0xb7
++	DLT_JUNIPER_VS                    = 0xe8
++	DLT_LAPB_WITH_DIR                 = 0xcf
++	DLT_LAPD                          = 0xcb
++	DLT_LIN                           = 0xd4
++	DLT_LINUX_EVDEV                   = 0xd8
++	DLT_LINUX_IRDA                    = 0x90
++	DLT_LINUX_LAPD                    = 0xb1
++	DLT_LINUX_PPP_WITHDIRECTION       = 0xa6
++	DLT_LINUX_SLL                     = 0x71
++	DLT_LOOP                          = 0x6c
++	DLT_LTALK                         = 0x72
++	DLT_MATCHING_MAX                  = 0xf6
++	DLT_MATCHING_MIN                  = 0x68
++	DLT_MFR                           = 0xb6
++	DLT_MOST                          = 0xd3
++	DLT_MPEG_2_TS                     = 0xf3
++	DLT_MPLS                          = 0xdb
++	DLT_MTP2                          = 0x8c
++	DLT_MTP2_WITH_PHDR                = 0x8b
++	DLT_MTP3                          = 0x8d
++	DLT_MUX27010                      = 0xec
++	DLT_NETANALYZER                   = 0xf0
++	DLT_NETANALYZER_TRANSPARENT       = 0xf1
++	DLT_NFC_LLCP                      = 0xf5
++	DLT_NFLOG                         = 0xef
++	DLT_NG40                          = 0xf4
++	DLT_NULL                          = 0x0
++	DLT_PCI_EXP                       = 0x7d
++	DLT_PFLOG                         = 0x75
++	DLT_PFSYNC                        = 0x79
++	DLT_PPI                           = 0xc0
++	DLT_PPP                           = 0x9
++	DLT_PPP_BSDOS                     = 0x10
++	DLT_PPP_ETHER                     = 0x33
++	DLT_PPP_PPPD                      = 0xa6
++	DLT_PPP_SERIAL                    = 0x32
++	DLT_PPP_WITH_DIR                  = 0xcc
++	DLT_PPP_WITH_DIRECTION            = 0xa6
++	DLT_PRISM_HEADER                  = 0x77
++	DLT_PRONET                        = 0x4
++	DLT_RAIF1                         = 0xc6
++	DLT_RAW                           = 0xc
++	DLT_RIO                           = 0x7c
++	DLT_SCCP                          = 0x8e
++	DLT_SITA                          = 0xc4
++	DLT_SLIP                          = 0x8
++	DLT_SLIP_BSDOS                    = 0xf
++	DLT_STANAG_5066_D_PDU             = 0xed
++	DLT_SUNATM                        = 0x7b
++	DLT_SYMANTEC_FIREWALL             = 0x63
++	DLT_TZSP                          = 0x80
++	DLT_USB                           = 0xba
++	DLT_USB_LINUX                     = 0xbd
++	DLT_USB_LINUX_MMAPPED             = 0xdc
++	DLT_USER0                         = 0x93
++	DLT_USER1                         = 0x94
++	DLT_USER10                        = 0x9d
++	DLT_USER11                        = 0x9e
++	DLT_USER12                        = 0x9f
++	DLT_USER13                        = 0xa0
++	DLT_USER14                        = 0xa1
++	DLT_USER15                        = 0xa2
++	DLT_USER2                         = 0x95
++	DLT_USER3                         = 0x96
++	DLT_USER4                         = 0x97
++	DLT_USER5                         = 0x98
++	DLT_USER6                         = 0x99
++	DLT_USER7                         = 0x9a
++	DLT_USER8                         = 0x9b
++	DLT_USER9                         = 0x9c
++	DLT_WIHART                        = 0xdf
++	DLT_X2E_SERIAL                    = 0xd5
++	DLT_X2E_XORAYA                    = 0xd6
++	DT_BLK                            = 0x6
++	DT_CHR                            = 0x2
++	DT_DIR                            = 0x4
++	DT_FIFO                           = 0x1
++	DT_LNK                            = 0xa
++	DT_REG                            = 0x8
++	DT_SOCK                           = 0xc
++	DT_UNKNOWN                        = 0x0
++	DT_WHT                            = 0xe
++	ECHO                              = 0x8
++	ECHOCTL                           = 0x40
++	ECHOE                             = 0x2
++	ECHOK                             = 0x4
++	ECHOKE                            = 0x1
++	ECHONL                            = 0x10
++	ECHOPRT                           = 0x20
++	EVFILT_AIO                        = -0x3
++	EVFILT_FS                         = -0x9
++	EVFILT_LIO                        = -0xa
++	EVFILT_PROC                       = -0x5
++	EVFILT_READ                       = -0x1
++	EVFILT_SIGNAL                     = -0x6
++	EVFILT_SYSCOUNT                   = 0xb
++	EVFILT_TIMER                      = -0x7
++	EVFILT_USER                       = -0xb
++	EVFILT_VNODE                      = -0x4
++	EVFILT_WRITE                      = -0x2
++	EV_ADD                            = 0x1
++	EV_CLEAR                          = 0x20
++	EV_DELETE                         = 0x2
++	EV_DISABLE                        = 0x8
++	EV_DISPATCH                       = 0x80
++	EV_DROP                           = 0x1000
++	EV_ENABLE                         = 0x4
++	EV_EOF                            = 0x8000
++	EV_ERROR                          = 0x4000
++	EV_FLAG1                          = 0x2000
++	EV_ONESHOT                        = 0x10
++	EV_RECEIPT                        = 0x40
++	EV_SYSFLAGS                       = 0xf000
++	EXTA                              = 0x4b00
++	EXTB                              = 0x9600
++	EXTPROC                           = 0x800
++	FD_CLOEXEC                        = 0x1
++	FD_SETSIZE                        = 0x400
++	FLUSHO                            = 0x800000
++	F_CANCEL                          = 0x5
++	F_DUP2FD                          = 0xa
++	F_DUP2FD_CLOEXEC                  = 0x12
++	F_DUPFD                           = 0x0
++	F_DUPFD_CLOEXEC                   = 0x11
++	F_GETFD                           = 0x1
++	F_GETFL                           = 0x3
++	F_GETLK                           = 0xb
++	F_GETOWN                          = 0x5
++	F_OGETLK                          = 0x7
++	F_OK                              = 0x0
++	F_OSETLK                          = 0x8
++	F_OSETLKW                         = 0x9
++	F_RDAHEAD                         = 0x10
++	F_RDLCK                           = 0x1
++	F_READAHEAD                       = 0xf
++	F_SETFD                           = 0x2
++	F_SETFL                           = 0x4
++	F_SETLK                           = 0xc
++	F_SETLKW                          = 0xd
++	F_SETLK_REMOTE                    = 0xe
++	F_SETOWN                          = 0x6
++	F_UNLCK                           = 0x2
++	F_UNLCKSYS                        = 0x4
++	F_WRLCK                           = 0x3
++	HUPCL                             = 0x4000
++	ICANON                            = 0x100
++	ICMP6_FILTER                      = 0x12
++	ICRNL                             = 0x100
++	IEXTEN                            = 0x400
++	IFAN_ARRIVAL                      = 0x0
++	IFAN_DEPARTURE                    = 0x1
++	IFF_ALLMULTI                      = 0x200
++	IFF_ALTPHYS                       = 0x4000
++	IFF_BROADCAST                     = 0x2
++	IFF_CANTCHANGE                    = 0x218f72
++	IFF_CANTCONFIG                    = 0x10000
++	IFF_DEBUG                         = 0x4
++	IFF_DRV_OACTIVE                   = 0x400
++	IFF_DRV_RUNNING                   = 0x40
++	IFF_DYING                         = 0x200000
++	IFF_LINK0                         = 0x1000
++	IFF_LINK1                         = 0x2000
++	IFF_LINK2                         = 0x4000
++	IFF_LOOPBACK                      = 0x8
++	IFF_MONITOR                       = 0x40000
++	IFF_MULTICAST                     = 0x8000
++	IFF_NOARP                         = 0x80
++	IFF_OACTIVE                       = 0x400
++	IFF_POINTOPOINT                   = 0x10
++	IFF_PPROMISC                      = 0x20000
++	IFF_PROMISC                       = 0x100
++	IFF_RENAMING                      = 0x400000
++	IFF_RUNNING                       = 0x40
++	IFF_SIMPLEX                       = 0x800
++	IFF_SMART                         = 0x20
++	IFF_STATICARP                     = 0x80000
++	IFF_UP                            = 0x1
++	IFNAMSIZ                          = 0x10
++	IFT_1822                          = 0x2
++	IFT_A12MPPSWITCH                  = 0x82
++	IFT_AAL2                          = 0xbb
++	IFT_AAL5                          = 0x31
++	IFT_ADSL                          = 0x5e
++	IFT_AFLANE8023                    = 0x3b
++	IFT_AFLANE8025                    = 0x3c
++	IFT_ARAP                          = 0x58
++	IFT_ARCNET                        = 0x23
++	IFT_ARCNETPLUS                    = 0x24
++	IFT_ASYNC                         = 0x54
++	IFT_ATM                           = 0x25
++	IFT_ATMDXI                        = 0x69
++	IFT_ATMFUNI                       = 0x6a
++	IFT_ATMIMA                        = 0x6b
++	IFT_ATMLOGICAL                    = 0x50
++	IFT_ATMRADIO                      = 0xbd
++	IFT_ATMSUBINTERFACE               = 0x86
++	IFT_ATMVCIENDPT                   = 0xc2
++	IFT_ATMVIRTUAL                    = 0x95
++	IFT_BGPPOLICYACCOUNTING           = 0xa2
++	IFT_BRIDGE                        = 0xd1
++	IFT_BSC                           = 0x53
++	IFT_CARP                          = 0xf8
++	IFT_CCTEMUL                       = 0x3d
++	IFT_CEPT                          = 0x13
++	IFT_CES                           = 0x85
++	IFT_CHANNEL                       = 0x46
++	IFT_CNR                           = 0x55
++	IFT_COFFEE                        = 0x84
++	IFT_COMPOSITELINK                 = 0x9b
++	IFT_DCN                           = 0x8d
++	IFT_DIGITALPOWERLINE              = 0x8a
++	IFT_DIGITALWRAPPEROVERHEADCHANNEL = 0xba
++	IFT_DLSW                          = 0x4a
++	IFT_DOCSCABLEDOWNSTREAM           = 0x80
++	IFT_DOCSCABLEMACLAYER             = 0x7f
++	IFT_DOCSCABLEUPSTREAM             = 0x81
++	IFT_DS0                           = 0x51
++	IFT_DS0BUNDLE                     = 0x52
++	IFT_DS1FDL                        = 0xaa
++	IFT_DS3                           = 0x1e
++	IFT_DTM                           = 0x8c
++	IFT_DVBASILN                      = 0xac
++	IFT_DVBASIOUT                     = 0xad
++	IFT_DVBRCCDOWNSTREAM              = 0x93
++	IFT_DVBRCCMACLAYER                = 0x92
++	IFT_DVBRCCUPSTREAM                = 0x94
++	IFT_ENC                           = 0xf4
++	IFT_EON                           = 0x19
++	IFT_EPLRS                         = 0x57
++	IFT_ESCON                         = 0x49
++	IFT_ETHER                         = 0x6
++	IFT_FAITH                         = 0xf2
++	IFT_FAST                          = 0x7d
++	IFT_FASTETHER                     = 0x3e
++	IFT_FASTETHERFX                   = 0x45
++	IFT_FDDI                          = 0xf
++	IFT_FIBRECHANNEL                  = 0x38
++	IFT_FRAMERELAYINTERCONNECT        = 0x3a
++	IFT_FRAMERELAYMPI                 = 0x5c
++	IFT_FRDLCIENDPT                   = 0xc1
++	IFT_FRELAY                        = 0x20
++	IFT_FRELAYDCE                     = 0x2c
++	IFT_FRF16MFRBUNDLE                = 0xa3
++	IFT_FRFORWARD                     = 0x9e
++	IFT_G703AT2MB                     = 0x43
++	IFT_G703AT64K                     = 0x42
++	IFT_GIF                           = 0xf0
++	IFT_GIGABITETHERNET               = 0x75
++	IFT_GR303IDT                      = 0xb2
++	IFT_GR303RDT                      = 0xb1
++	IFT_H323GATEKEEPER                = 0xa4
++	IFT_H323PROXY                     = 0xa5
++	IFT_HDH1822                       = 0x3
++	IFT_HDLC                          = 0x76
++	IFT_HDSL2                         = 0xa8
++	IFT_HIPERLAN2                     = 0xb7
++	IFT_HIPPI                         = 0x2f
++	IFT_HIPPIINTERFACE                = 0x39
++	IFT_HOSTPAD                       = 0x5a
++	IFT_HSSI                          = 0x2e
++	IFT_HY                            = 0xe
++	IFT_IBM370PARCHAN                 = 0x48
++	IFT_IDSL                          = 0x9a
++	IFT_IEEE1394                      = 0x90
++	IFT_IEEE80211                     = 0x47
++	IFT_IEEE80212                     = 0x37
++	IFT_IEEE8023ADLAG                 = 0xa1
++	IFT_IFGSN                         = 0x91
++	IFT_IMT                           = 0xbe
++	IFT_INFINIBAND                    = 0xc7
++	IFT_INTERLEAVE                    = 0x7c
++	IFT_IP                            = 0x7e
++	IFT_IPFORWARD                     = 0x8e
++	IFT_IPOVERATM                     = 0x72
++	IFT_IPOVERCDLC                    = 0x6d
++	IFT_IPOVERCLAW                    = 0x6e
++	IFT_IPSWITCH                      = 0x4e
++	IFT_IPXIP                         = 0xf9
++	IFT_ISDN                          = 0x3f
++	IFT_ISDNBASIC                     = 0x14
++	IFT_ISDNPRIMARY                   = 0x15
++	IFT_ISDNS                         = 0x4b
++	IFT_ISDNU                         = 0x4c
++	IFT_ISO88022LLC                   = 0x29
++	IFT_ISO88023                      = 0x7
++	IFT_ISO88024                      = 0x8
++	IFT_ISO88025                      = 0x9
++	IFT_ISO88025CRFPINT               = 0x62
++	IFT_ISO88025DTR                   = 0x56
++	IFT_ISO88025FIBER                 = 0x73
++	IFT_ISO88026                      = 0xa
++	IFT_ISUP                          = 0xb3
++	IFT_L2VLAN                        = 0x87
++	IFT_L3IPVLAN                      = 0x88
++	IFT_L3IPXVLAN                     = 0x89
++	IFT_LAPB                          = 0x10
++	IFT_LAPD                          = 0x4d
++	IFT_LAPF                          = 0x77
++	IFT_LOCALTALK                     = 0x2a
++	IFT_LOOP                          = 0x18
++	IFT_MEDIAMAILOVERIP               = 0x8b
++	IFT_MFSIGLINK                     = 0xa7
++	IFT_MIOX25                        = 0x26
++	IFT_MODEM                         = 0x30
++	IFT_MPC                           = 0x71
++	IFT_MPLS                          = 0xa6
++	IFT_MPLSTUNNEL                    = 0x96
++	IFT_MSDSL                         = 0x8f
++	IFT_MVL                           = 0xbf
++	IFT_MYRINET                       = 0x63
++	IFT_NFAS                          = 0xaf
++	IFT_NSIP                          = 0x1b
++	IFT_OPTICALCHANNEL                = 0xc3
++	IFT_OPTICALTRANSPORT              = 0xc4
++	IFT_OTHER                         = 0x1
++	IFT_P10                           = 0xc
++	IFT_P80                           = 0xd
++	IFT_PARA                          = 0x22
++	IFT_PFLOG                         = 0xf6
++	IFT_PFSYNC                        = 0xf7
++	IFT_PLC                           = 0xae
++	IFT_POS                           = 0xab
++	IFT_PPP                           = 0x17
++	IFT_PPPMULTILINKBUNDLE            = 0x6c
++	IFT_PROPBWAP2MP                   = 0xb8
++	IFT_PROPCNLS                      = 0x59
++	IFT_PROPDOCSWIRELESSDOWNSTREAM    = 0xb5
++	IFT_PROPDOCSWIRELESSMACLAYER      = 0xb4
++	IFT_PROPDOCSWIRELESSUPSTREAM      = 0xb6
++	IFT_PROPMUX                       = 0x36
++	IFT_PROPVIRTUAL                   = 0x35
++	IFT_PROPWIRELESSP2P               = 0x9d
++	IFT_PTPSERIAL                     = 0x16
++	IFT_PVC                           = 0xf1
++	IFT_QLLC                          = 0x44
++	IFT_RADIOMAC                      = 0xbc
++	IFT_RADSL                         = 0x5f
++	IFT_REACHDSL                      = 0xc0
++	IFT_RFC1483                       = 0x9f
++	IFT_RS232                         = 0x21
++	IFT_RSRB                          = 0x4f
++	IFT_SDLC                          = 0x11
++	IFT_SDSL                          = 0x60
++	IFT_SHDSL                         = 0xa9
++	IFT_SIP                           = 0x1f
++	IFT_SLIP                          = 0x1c
++	IFT_SMDSDXI                       = 0x2b
++	IFT_SMDSICIP                      = 0x34
++	IFT_SONET                         = 0x27
++	IFT_SONETOVERHEADCHANNEL          = 0xb9
++	IFT_SONETPATH                     = 0x32
++	IFT_SONETVT                       = 0x33
++	IFT_SRP                           = 0x97
++	IFT_SS7SIGLINK                    = 0x9c
++	IFT_STACKTOSTACK                  = 0x6f
++	IFT_STARLAN                       = 0xb
++	IFT_STF                           = 0xd7
++	IFT_T1                            = 0x12
++	IFT_TDLC                          = 0x74
++	IFT_TERMPAD                       = 0x5b
++	IFT_TR008                         = 0xb0
++	IFT_TRANSPHDLC                    = 0x7b
++	IFT_TUNNEL                        = 0x83
++	IFT_ULTRA                         = 0x1d
++	IFT_USB                           = 0xa0
++	IFT_V11                           = 0x40
++	IFT_V35                           = 0x2d
++	IFT_V36                           = 0x41
++	IFT_V37                           = 0x78
++	IFT_VDSL                          = 0x61
++	IFT_VIRTUALIPADDRESS              = 0x70
++	IFT_VOICEEM                       = 0x64
++	IFT_VOICEENCAP                    = 0x67
++	IFT_VOICEFXO                      = 0x65
++	IFT_VOICEFXS                      = 0x66
++	IFT_VOICEOVERATM                  = 0x98
++	IFT_VOICEOVERFRAMERELAY           = 0x99
++	IFT_VOICEOVERIP                   = 0x68
++	IFT_X213                          = 0x5d
++	IFT_X25                           = 0x5
++	IFT_X25DDN                        = 0x4
++	IFT_X25HUNTGROUP                  = 0x7a
++	IFT_X25MLP                        = 0x79
++	IFT_X25PLE                        = 0x28
++	IFT_XETHER                        = 0x1a
++	IGNBRK                            = 0x1
++	IGNCR                             = 0x80
++	IGNPAR                            = 0x4
++	IMAXBEL                           = 0x2000
++	INLCR                             = 0x40
++	INPCK                             = 0x10
++	IN_CLASSA_HOST                    = 0xffffff
++	IN_CLASSA_MAX                     = 0x80
++	IN_CLASSA_NET                     = 0xff000000
++	IN_CLASSA_NSHIFT                  = 0x18
++	IN_CLASSB_HOST                    = 0xffff
++	IN_CLASSB_MAX                     = 0x10000
++	IN_CLASSB_NET                     = 0xffff0000
++	IN_CLASSB_NSHIFT                  = 0x10
++	IN_CLASSC_HOST                    = 0xff
++	IN_CLASSC_NET                     = 0xffffff00
++	IN_CLASSC_NSHIFT                  = 0x8
++	IN_CLASSD_HOST                    = 0xfffffff
++	IN_CLASSD_NET                     = 0xf0000000
++	IN_CLASSD_NSHIFT                  = 0x1c
++	IN_LOOPBACKNET                    = 0x7f
++	IN_RFC3021_MASK                   = 0xfffffffe
++	IPPROTO_3PC                       = 0x22
++	IPPROTO_ADFS                      = 0x44
++	IPPROTO_AH                        = 0x33
++	IPPROTO_AHIP                      = 0x3d
++	IPPROTO_APES                      = 0x63
++	IPPROTO_ARGUS                     = 0xd
++	IPPROTO_AX25                      = 0x5d
++	IPPROTO_BHA                       = 0x31
++	IPPROTO_BLT                       = 0x1e
++	IPPROTO_BRSATMON                  = 0x4c
++	IPPROTO_CARP                      = 0x70
++	IPPROTO_CFTP                      = 0x3e
++	IPPROTO_CHAOS                     = 0x10
++	IPPROTO_CMTP                      = 0x26
++	IPPROTO_CPHB                      = 0x49
++	IPPROTO_CPNX                      = 0x48
++	IPPROTO_DDP                       = 0x25
++	IPPROTO_DGP                       = 0x56
++	IPPROTO_DIVERT                    = 0x102
++	IPPROTO_DONE                      = 0x101
++	IPPROTO_DSTOPTS                   = 0x3c
++	IPPROTO_EGP                       = 0x8
++	IPPROTO_EMCON                     = 0xe
++	IPPROTO_ENCAP                     = 0x62
++	IPPROTO_EON                       = 0x50
++	IPPROTO_ESP                       = 0x32
++	IPPROTO_ETHERIP                   = 0x61
++	IPPROTO_FRAGMENT                  = 0x2c
++	IPPROTO_GGP                       = 0x3
++	IPPROTO_GMTP                      = 0x64
++	IPPROTO_GRE                       = 0x2f
++	IPPROTO_HELLO                     = 0x3f
++	IPPROTO_HMP                       = 0x14
++	IPPROTO_HOPOPTS                   = 0x0
++	IPPROTO_ICMP                      = 0x1
++	IPPROTO_ICMPV6                    = 0x3a
++	IPPROTO_IDP                       = 0x16
++	IPPROTO_IDPR                      = 0x23
++	IPPROTO_IDRP                      = 0x2d
++	IPPROTO_IGMP                      = 0x2
++	IPPROTO_IGP                       = 0x55
++	IPPROTO_IGRP                      = 0x58
++	IPPROTO_IL                        = 0x28
++	IPPROTO_INLSP                     = 0x34
++	IPPROTO_INP                       = 0x20
++	IPPROTO_IP                        = 0x0
++	IPPROTO_IPCOMP                    = 0x6c
++	IPPROTO_IPCV                      = 0x47
++	IPPROTO_IPEIP                     = 0x5e
++	IPPROTO_IPIP                      = 0x4
++	IPPROTO_IPPC                      = 0x43
++	IPPROTO_IPV4                      = 0x4
++	IPPROTO_IPV6                      = 0x29
++	IPPROTO_IRTP                      = 0x1c
++	IPPROTO_KRYPTOLAN                 = 0x41
++	IPPROTO_LARP                      = 0x5b
++	IPPROTO_LEAF1                     = 0x19
++	IPPROTO_LEAF2                     = 0x1a
++	IPPROTO_MAX                       = 0x100
++	IPPROTO_MAXID                     = 0x34
++	IPPROTO_MEAS                      = 0x13
++	IPPROTO_MH                        = 0x87
++	IPPROTO_MHRP                      = 0x30
++	IPPROTO_MICP                      = 0x5f
++	IPPROTO_MOBILE                    = 0x37
++	IPPROTO_MPLS                      = 0x89
++	IPPROTO_MTP                       = 0x5c
++	IPPROTO_MUX                       = 0x12
++	IPPROTO_ND                        = 0x4d
++	IPPROTO_NHRP                      = 0x36
++	IPPROTO_NONE                      = 0x3b
++	IPPROTO_NSP                       = 0x1f
++	IPPROTO_NVPII                     = 0xb
++	IPPROTO_OLD_DIVERT                = 0xfe
++	IPPROTO_OSPFIGP                   = 0x59
++	IPPROTO_PFSYNC                    = 0xf0
++	IPPROTO_PGM                       = 0x71
++	IPPROTO_PIGP                      = 0x9
++	IPPROTO_PIM                       = 0x67
++	IPPROTO_PRM                       = 0x15
++	IPPROTO_PUP                       = 0xc
++	IPPROTO_PVP                       = 0x4b
++	IPPROTO_RAW                       = 0xff
++	IPPROTO_RCCMON                    = 0xa
++	IPPROTO_RDP                       = 0x1b
++	IPPROTO_ROUTING                   = 0x2b
++	IPPROTO_RSVP                      = 0x2e
++	IPPROTO_RVD                       = 0x42
++	IPPROTO_SATEXPAK                  = 0x40
++	IPPROTO_SATMON                    = 0x45
++	IPPROTO_SCCSP                     = 0x60
++	IPPROTO_SCTP                      = 0x84
++	IPPROTO_SDRP                      = 0x2a
++	IPPROTO_SEND                      = 0x103
++	IPPROTO_SEP                       = 0x21
++	IPPROTO_SKIP                      = 0x39
++	IPPROTO_SPACER                    = 0x7fff
++	IPPROTO_SRPC                      = 0x5a
++	IPPROTO_ST                        = 0x7
++	IPPROTO_SVMTP                     = 0x52
++	IPPROTO_SWIPE                     = 0x35
++	IPPROTO_TCF                       = 0x57
++	IPPROTO_TCP                       = 0x6
++	IPPROTO_TLSP                      = 0x38
++	IPPROTO_TP                        = 0x1d
++	IPPROTO_TPXX                      = 0x27
++	IPPROTO_TRUNK1                    = 0x17
++	IPPROTO_TRUNK2                    = 0x18
++	IPPROTO_TTP                       = 0x54
++	IPPROTO_UDP                       = 0x11
++	IPPROTO_VINES                     = 0x53
++	IPPROTO_VISA                      = 0x46
++	IPPROTO_VMTP                      = 0x51
++	IPPROTO_WBEXPAK                   = 0x4f
++	IPPROTO_WBMON                     = 0x4e
++	IPPROTO_WSN                       = 0x4a
++	IPPROTO_XNET                      = 0xf
++	IPPROTO_XTP                       = 0x24
++	IPV6_AUTOFLOWLABEL                = 0x3b
++	IPV6_BINDANY                      = 0x40
++	IPV6_BINDV6ONLY                   = 0x1b
++	IPV6_CHECKSUM                     = 0x1a
++	IPV6_DEFAULT_MULTICAST_HOPS       = 0x1
++	IPV6_DEFAULT_MULTICAST_LOOP       = 0x1
++	IPV6_DEFHLIM                      = 0x40
++	IPV6_DONTFRAG                     = 0x3e
++	IPV6_DSTOPTS                      = 0x32
++	IPV6_FAITH                        = 0x1d
++	IPV6_FLOWINFO_MASK                = 0xffffff0f
++	IPV6_FLOWLABEL_MASK               = 0xffff0f00
++	IPV6_FRAGTTL                      = 0x78
++	IPV6_FW_ADD                       = 0x1e
++	IPV6_FW_DEL                       = 0x1f
++	IPV6_FW_FLUSH                     = 0x20
++	IPV6_FW_GET                       = 0x22
++	IPV6_FW_ZERO                      = 0x21
++	IPV6_HLIMDEC                      = 0x1
++	IPV6_HOPLIMIT                     = 0x2f
++	IPV6_HOPOPTS                      = 0x31
++	IPV6_IPSEC_POLICY                 = 0x1c
++	IPV6_JOIN_GROUP                   = 0xc
++	IPV6_LEAVE_GROUP                  = 0xd
++	IPV6_MAXHLIM                      = 0xff
++	IPV6_MAXOPTHDR                    = 0x800
++	IPV6_MAXPACKET                    = 0xffff
++	IPV6_MAX_GROUP_SRC_FILTER         = 0x200
++	IPV6_MAX_MEMBERSHIPS              = 0xfff
++	IPV6_MAX_SOCK_SRC_FILTER          = 0x80
++	IPV6_MIN_MEMBERSHIPS              = 0x1f
++	IPV6_MMTU                         = 0x500
++	IPV6_MSFILTER                     = 0x4a
++	IPV6_MULTICAST_HOPS               = 0xa
++	IPV6_MULTICAST_IF                 = 0x9
++	IPV6_MULTICAST_LOOP               = 0xb
++	IPV6_NEXTHOP                      = 0x30
++	IPV6_PATHMTU                      = 0x2c
++	IPV6_PKTINFO                      = 0x2e
++	IPV6_PORTRANGE                    = 0xe
++	IPV6_PORTRANGE_DEFAULT            = 0x0
++	IPV6_PORTRANGE_HIGH               = 0x1
++	IPV6_PORTRANGE_LOW                = 0x2
++	IPV6_PREFER_TEMPADDR              = 0x3f
++	IPV6_RECVDSTOPTS                  = 0x28
++	IPV6_RECVHOPLIMIT                 = 0x25
++	IPV6_RECVHOPOPTS                  = 0x27
++	IPV6_RECVPATHMTU                  = 0x2b
++	IPV6_RECVPKTINFO                  = 0x24
++	IPV6_RECVRTHDR                    = 0x26
++	IPV6_RECVTCLASS                   = 0x39
++	IPV6_RTHDR                        = 0x33
++	IPV6_RTHDRDSTOPTS                 = 0x23
++	IPV6_RTHDR_LOOSE                  = 0x0
++	IPV6_RTHDR_STRICT                 = 0x1
++	IPV6_RTHDR_TYPE_0                 = 0x0
++	IPV6_SOCKOPT_RESERVED1            = 0x3
++	IPV6_TCLASS                       = 0x3d
++	IPV6_UNICAST_HOPS                 = 0x4
++	IPV6_USE_MIN_MTU                  = 0x2a
++	IPV6_V6ONLY                       = 0x1b
++	IPV6_VERSION                      = 0x60
++	IPV6_VERSION_MASK                 = 0xf0
++	IP_ADD_MEMBERSHIP                 = 0xc
++	IP_ADD_SOURCE_MEMBERSHIP          = 0x46
++	IP_BINDANY                        = 0x18
++	IP_BLOCK_SOURCE                   = 0x48
++	IP_DEFAULT_MULTICAST_LOOP         = 0x1
++	IP_DEFAULT_MULTICAST_TTL          = 0x1
++	IP_DF                             = 0x4000
++	IP_DONTFRAG                       = 0x43
++	IP_DROP_MEMBERSHIP                = 0xd
++	IP_DROP_SOURCE_MEMBERSHIP         = 0x47
++	IP_DUMMYNET3                      = 0x31
++	IP_DUMMYNET_CONFIGURE             = 0x3c
++	IP_DUMMYNET_DEL                   = 0x3d
++	IP_DUMMYNET_FLUSH                 = 0x3e
++	IP_DUMMYNET_GET                   = 0x40
++	IP_FAITH                          = 0x16
++	IP_FW3                            = 0x30
++	IP_FW_ADD                         = 0x32
++	IP_FW_DEL                         = 0x33
++	IP_FW_FLUSH                       = 0x34
++	IP_FW_GET                         = 0x36
++	IP_FW_NAT_CFG                     = 0x38
++	IP_FW_NAT_DEL                     = 0x39
++	IP_FW_NAT_GET_CONFIG              = 0x3a
++	IP_FW_NAT_GET_LOG                 = 0x3b
++	IP_FW_RESETLOG                    = 0x37
++	IP_FW_TABLE_ADD                   = 0x28
++	IP_FW_TABLE_DEL                   = 0x29
++	IP_FW_TABLE_FLUSH                 = 0x2a
++	IP_FW_TABLE_GETSIZE               = 0x2b
++	IP_FW_TABLE_LIST                  = 0x2c
++	IP_FW_ZERO                        = 0x35
++	IP_HDRINCL                        = 0x2
++	IP_IPSEC_POLICY                   = 0x15
++	IP_MAXPACKET                      = 0xffff
++	IP_MAX_GROUP_SRC_FILTER           = 0x200
++	IP_MAX_MEMBERSHIPS                = 0xfff
++	IP_MAX_SOCK_MUTE_FILTER           = 0x80
++	IP_MAX_SOCK_SRC_FILTER            = 0x80
++	IP_MAX_SOURCE_FILTER              = 0x400
++	IP_MF                             = 0x2000
++	IP_MINTTL                         = 0x42
++	IP_MIN_MEMBERSHIPS                = 0x1f
++	IP_MSFILTER                       = 0x4a
++	IP_MSS                            = 0x240
++	IP_MULTICAST_IF                   = 0x9
++	IP_MULTICAST_LOOP                 = 0xb
++	IP_MULTICAST_TTL                  = 0xa
++	IP_MULTICAST_VIF                  = 0xe
++	IP_OFFMASK                        = 0x1fff
++	IP_ONESBCAST                      = 0x17
++	IP_OPTIONS                        = 0x1
++	IP_PORTRANGE                      = 0x13
++	IP_PORTRANGE_DEFAULT              = 0x0
++	IP_PORTRANGE_HIGH                 = 0x1
++	IP_PORTRANGE_LOW                  = 0x2
++	IP_RECVDSTADDR                    = 0x7
++	IP_RECVIF                         = 0x14
++	IP_RECVOPTS                       = 0x5
++	IP_RECVRETOPTS                    = 0x6
++	IP_RECVTOS                        = 0x44
++	IP_RECVTTL                        = 0x41
++	IP_RETOPTS                        = 0x8
++	IP_RF                             = 0x8000
++	IP_RSVP_OFF                       = 0x10
++	IP_RSVP_ON                        = 0xf
++	IP_RSVP_VIF_OFF                   = 0x12
++	IP_RSVP_VIF_ON                    = 0x11
++	IP_SENDSRCADDR                    = 0x7
++	IP_TOS                            = 0x3
++	IP_TTL                            = 0x4
++	IP_UNBLOCK_SOURCE                 = 0x49
++	ISIG                              = 0x80
++	ISTRIP                            = 0x20
++	IXANY                             = 0x800
++	IXOFF                             = 0x400
++	IXON                              = 0x200
++	LOCK_EX                           = 0x2
++	LOCK_NB                           = 0x4
++	LOCK_SH                           = 0x1
++	LOCK_UN                           = 0x8
++	MADV_AUTOSYNC                     = 0x7
++	MADV_CORE                         = 0x9
++	MADV_DONTNEED                     = 0x4
++	MADV_FREE                         = 0x5
++	MADV_NOCORE                       = 0x8
++	MADV_NORMAL                       = 0x0
++	MADV_NOSYNC                       = 0x6
++	MADV_PROTECT                      = 0xa
++	MADV_RANDOM                       = 0x1
++	MADV_SEQUENTIAL                   = 0x2
++	MADV_WILLNEED                     = 0x3
++	MAP_32BIT                         = 0x80000
++	MAP_ALIGNED_SUPER                 = 0x1000000
++	MAP_ALIGNMENT_MASK                = -0x1000000
++	MAP_ALIGNMENT_SHIFT               = 0x18
++	MAP_ANON                          = 0x1000
++	MAP_ANONYMOUS                     = 0x1000
++	MAP_COPY                          = 0x2
++	MAP_FILE                          = 0x0
++	MAP_FIXED                         = 0x10
++	MAP_HASSEMAPHORE                  = 0x200
++	MAP_NOCORE                        = 0x20000
++	MAP_NORESERVE                     = 0x40
++	MAP_NOSYNC                        = 0x800
++	MAP_PREFAULT_READ                 = 0x40000
++	MAP_PRIVATE                       = 0x2
++	MAP_RENAME                        = 0x20
++	MAP_RESERVED0080                  = 0x80
++	MAP_RESERVED0100                  = 0x100
++	MAP_SHARED                        = 0x1
++	MAP_STACK                         = 0x400
++	MCL_CURRENT                       = 0x1
++	MCL_FUTURE                        = 0x2
++	MSG_CMSG_CLOEXEC                  = 0x40000
++	MSG_COMPAT                        = 0x8000
++	MSG_CTRUNC                        = 0x20
++	MSG_DONTROUTE                     = 0x4
++	MSG_DONTWAIT                      = 0x80
++	MSG_EOF                           = 0x100
++	MSG_EOR                           = 0x8
++	MSG_NBIO                          = 0x4000
++	MSG_NOSIGNAL                      = 0x20000
++	MSG_NOTIFICATION                  = 0x2000
++	MSG_OOB                           = 0x1
++	MSG_PEEK                          = 0x2
++	MSG_TRUNC                         = 0x10
++	MSG_WAITALL                       = 0x40
++	MS_ASYNC                          = 0x1
++	MS_INVALIDATE                     = 0x2
++	MS_SYNC                           = 0x0
++	NAME_MAX                          = 0xff
++	NET_RT_DUMP                       = 0x1
++	NET_RT_FLAGS                      = 0x2
++	NET_RT_IFLIST                     = 0x3
++	NET_RT_IFLISTL                    = 0x5
++	NET_RT_IFMALIST                   = 0x4
++	NET_RT_MAXID                      = 0x6
++	NOFLSH                            = 0x80000000
++	NOTE_ATTRIB                       = 0x8
++	NOTE_CHILD                        = 0x4
++	NOTE_DELETE                       = 0x1
++	NOTE_EXEC                         = 0x20000000
++	NOTE_EXIT                         = 0x80000000
++	NOTE_EXTEND                       = 0x4
++	NOTE_FFAND                        = 0x40000000
++	NOTE_FFCOPY                       = 0xc0000000
++	NOTE_FFCTRLMASK                   = 0xc0000000
++	NOTE_FFLAGSMASK                   = 0xffffff
++	NOTE_FFNOP                        = 0x0
++	NOTE_FFOR                         = 0x80000000
++	NOTE_FORK                         = 0x40000000
++	NOTE_LINK                         = 0x10
++	NOTE_LOWAT                        = 0x1
++	NOTE_PCTRLMASK                    = 0xf0000000
++	NOTE_PDATAMASK                    = 0xfffff
++	NOTE_RENAME                       = 0x20
++	NOTE_REVOKE                       = 0x40
++	NOTE_TRACK                        = 0x1
++	NOTE_TRACKERR                     = 0x2
++	NOTE_TRIGGER                      = 0x1000000
++	NOTE_WRITE                        = 0x2
++	OCRNL                             = 0x10
++	ONLCR                             = 0x2
++	ONLRET                            = 0x40
++	ONOCR                             = 0x20
++	ONOEOT                            = 0x8
++	OPOST                             = 0x1
++	O_ACCMODE                         = 0x3
++	O_APPEND                          = 0x8
++	O_ASYNC                           = 0x40
++	O_CLOEXEC                         = 0x100000
++	O_CREAT                           = 0x200
++	O_DIRECT                          = 0x10000
++	O_DIRECTORY                       = 0x20000
++	O_EXCL                            = 0x800
++	O_EXEC                            = 0x40000
++	O_EXLOCK                          = 0x20
++	O_FSYNC                           = 0x80
++	O_NDELAY                          = 0x4
++	O_NOCTTY                          = 0x8000
++	O_NOFOLLOW                        = 0x100
++	O_NONBLOCK                        = 0x4
++	O_RDONLY                          = 0x0
++	O_RDWR                            = 0x2
++	O_SHLOCK                          = 0x10
++	O_SYNC                            = 0x80
++	O_TRUNC                           = 0x400
++	O_TTY_INIT                        = 0x80000
++	O_WRONLY                          = 0x1
++	PARENB                            = 0x1000
++	PARMRK                            = 0x8
++	PARODD                            = 0x2000
++	PENDIN                            = 0x20000000
++	PRIO_PGRP                         = 0x1
++	PRIO_PROCESS                      = 0x0
++	PRIO_USER                         = 0x2
++	PROT_EXEC                         = 0x4
++	PROT_NONE                         = 0x0
++	PROT_READ                         = 0x1
++	PROT_WRITE                        = 0x2
++	RLIMIT_AS                         = 0xa
++	RLIMIT_CORE                       = 0x4
++	RLIMIT_CPU                        = 0x0
++	RLIMIT_DATA                       = 0x2
++	RLIMIT_FSIZE                      = 0x1
++	RLIMIT_NOFILE                     = 0x8
++	RLIMIT_STACK                      = 0x3
++	RLIM_INFINITY                     = 0x7fffffffffffffff
++	RTAX_AUTHOR                       = 0x6
++	RTAX_BRD                          = 0x7
++	RTAX_DST                          = 0x0
++	RTAX_GATEWAY                      = 0x1
++	RTAX_GENMASK                      = 0x3
++	RTAX_IFA                          = 0x5
++	RTAX_IFP                          = 0x4
++	RTAX_MAX                          = 0x8
++	RTAX_NETMASK                      = 0x2
++	RTA_AUTHOR                        = 0x40
++	RTA_BRD                           = 0x80
++	RTA_DST                           = 0x1
++	RTA_GATEWAY                       = 0x2
++	RTA_GENMASK                       = 0x8
++	RTA_IFA                           = 0x20
++	RTA_IFP                           = 0x10
++	RTA_NETMASK                       = 0x4
++	RTF_BLACKHOLE                     = 0x1000
++	RTF_BROADCAST                     = 0x400000
++	RTF_DONE                          = 0x40
++	RTF_DYNAMIC                       = 0x10
++	RTF_FMASK                         = 0x1004d808
++	RTF_GATEWAY                       = 0x2
++	RTF_GWFLAG_COMPAT                 = 0x80000000
++	RTF_HOST                          = 0x4
++	RTF_LLDATA                        = 0x400
++	RTF_LLINFO                        = 0x400
++	RTF_LOCAL                         = 0x200000
++	RTF_MODIFIED                      = 0x20
++	RTF_MULTICAST                     = 0x800000
++	RTF_PINNED                        = 0x100000
++	RTF_PRCLONING                     = 0x10000
++	RTF_PROTO1                        = 0x8000
++	RTF_PROTO2                        = 0x4000
++	RTF_PROTO3                        = 0x40000
++	RTF_REJECT                        = 0x8
++	RTF_RNH_LOCKED                    = 0x40000000
++	RTF_STATIC                        = 0x800
++	RTF_STICKY                        = 0x10000000
++	RTF_UP                            = 0x1
++	RTF_XRESOLVE                      = 0x200
++	RTM_ADD                           = 0x1
++	RTM_CHANGE                        = 0x3
++	RTM_DELADDR                       = 0xd
++	RTM_DELETE                        = 0x2
++	RTM_DELMADDR                      = 0x10
++	RTM_GET                           = 0x4
++	RTM_IEEE80211                     = 0x12
++	RTM_IFANNOUNCE                    = 0x11
++	RTM_IFINFO                        = 0xe
++	RTM_LOCK                          = 0x8
++	RTM_LOSING                        = 0x5
++	RTM_MISS                          = 0x7
++	RTM_NEWADDR                       = 0xc
++	RTM_NEWMADDR                      = 0xf
++	RTM_OLDADD                        = 0x9
++	RTM_OLDDEL                        = 0xa
++	RTM_REDIRECT                      = 0x6
++	RTM_RESOLVE                       = 0xb
++	RTM_RTTUNIT                       = 0xf4240
++	RTM_VERSION                       = 0x5
++	RTV_EXPIRE                        = 0x4
++	RTV_HOPCOUNT                      = 0x2
++	RTV_MTU                           = 0x1
++	RTV_RPIPE                         = 0x8
++	RTV_RTT                           = 0x40
++	RTV_RTTVAR                        = 0x80
++	RTV_SPIPE                         = 0x10
++	RTV_SSTHRESH                      = 0x20
++	RTV_WEIGHT                        = 0x100
++	RT_CACHING_CONTEXT                = 0x1
++	RT_DEFAULT_FIB                    = 0x0
++	RT_NORTREF                        = 0x2
++	RUSAGE_CHILDREN                   = -0x1
++	RUSAGE_SELF                       = 0x0
++	RUSAGE_THREAD                     = 0x1
++	SCM_BINTIME                       = 0x4
++	SCM_CREDS                         = 0x3
++	SCM_RIGHTS                        = 0x1
++	SCM_TIMESTAMP                     = 0x2
++	SHUT_RD                           = 0x0
++	SHUT_RDWR                         = 0x2
++	SHUT_WR                           = 0x1
++	SIOCADDMULTI                      = 0x80206931
++	SIOCADDRT                         = 0x8040720a
++	SIOCAIFADDR                       = 0x8040691a
++	SIOCAIFGROUP                      = 0x80286987
++	SIOCALIFADDR                      = 0x8118691b
++	SIOCATMARK                        = 0x40047307
++	SIOCDELMULTI                      = 0x80206932
++	SIOCDELRT                         = 0x8040720b
++	SIOCDIFADDR                       = 0x80206919
++	SIOCDIFGROUP                      = 0x80286989
++	SIOCDIFPHYADDR                    = 0x80206949
++	SIOCDLIFADDR                      = 0x8118691d
++	SIOCGDRVSPEC                      = 0xc028697b
++	SIOCGETSGCNT                      = 0xc0207210
++	SIOCGETVIFCNT                     = 0xc028720f
++	SIOCGHIWAT                        = 0x40047301
++	SIOCGIFADDR                       = 0xc0206921
++	SIOCGIFBRDADDR                    = 0xc0206923
++	SIOCGIFCAP                        = 0xc020691f
++	SIOCGIFCONF                       = 0xc0106924
++	SIOCGIFDESCR                      = 0xc020692a
++	SIOCGIFDSTADDR                    = 0xc0206922
++	SIOCGIFFIB                        = 0xc020695c
++	SIOCGIFFLAGS                      = 0xc0206911
++	SIOCGIFGENERIC                    = 0xc020693a
++	SIOCGIFGMEMB                      = 0xc028698a
++	SIOCGIFGROUP                      = 0xc0286988
++	SIOCGIFINDEX                      = 0xc0206920
++	SIOCGIFMAC                        = 0xc0206926
++	SIOCGIFMEDIA                      = 0xc0306938
++	SIOCGIFMETRIC                     = 0xc0206917
++	SIOCGIFMTU                        = 0xc0206933
++	SIOCGIFNETMASK                    = 0xc0206925
++	SIOCGIFPDSTADDR                   = 0xc0206948
++	SIOCGIFPHYS                       = 0xc0206935
++	SIOCGIFPSRCADDR                   = 0xc0206947
++	SIOCGIFSTATUS                     = 0xc331693b
++	SIOCGLIFADDR                      = 0xc118691c
++	SIOCGLIFPHYADDR                   = 0xc118694b
++	SIOCGLOWAT                        = 0x40047303
++	SIOCGPGRP                         = 0x40047309
++	SIOCGPRIVATE_0                    = 0xc0206950
++	SIOCGPRIVATE_1                    = 0xc0206951
++	SIOCIFCREATE                      = 0xc020697a
++	SIOCIFCREATE2                     = 0xc020697c
++	SIOCIFDESTROY                     = 0x80206979
++	SIOCIFGCLONERS                    = 0xc0106978
++	SIOCSDRVSPEC                      = 0x8028697b
++	SIOCSHIWAT                        = 0x80047300
++	SIOCSIFADDR                       = 0x8020690c
++	SIOCSIFBRDADDR                    = 0x80206913
++	SIOCSIFCAP                        = 0x8020691e
++	SIOCSIFDESCR                      = 0x80206929
++	SIOCSIFDSTADDR                    = 0x8020690e
++	SIOCSIFFIB                        = 0x8020695d
++	SIOCSIFFLAGS                      = 0x80206910
++	SIOCSIFGENERIC                    = 0x80206939
++	SIOCSIFLLADDR                     = 0x8020693c
++	SIOCSIFMAC                        = 0x80206927
++	SIOCSIFMEDIA                      = 0xc0206937
++	SIOCSIFMETRIC                     = 0x80206918
++	SIOCSIFMTU                        = 0x80206934
++	SIOCSIFNAME                       = 0x80206928
++	SIOCSIFNETMASK                    = 0x80206916
++	SIOCSIFPHYADDR                    = 0x80406946
++	SIOCSIFPHYS                       = 0x80206936
++	SIOCSIFRVNET                      = 0xc020695b
++	SIOCSIFVNET                       = 0xc020695a
++	SIOCSLIFPHYADDR                   = 0x8118694a
++	SIOCSLOWAT                        = 0x80047302
++	SIOCSPGRP                         = 0x80047308
++	SOCK_CLOEXEC                      = 0x10000000
++	SOCK_DGRAM                        = 0x2
++	SOCK_MAXADDRLEN                   = 0xff
++	SOCK_NONBLOCK                     = 0x20000000
++	SOCK_RAW                          = 0x3
++	SOCK_RDM                          = 0x4
++	SOCK_SEQPACKET                    = 0x5
++	SOCK_STREAM                       = 0x1
++	SOL_SOCKET                        = 0xffff
++	SOMAXCONN                         = 0x80
++	SO_ACCEPTCONN                     = 0x2
++	SO_ACCEPTFILTER                   = 0x1000
++	SO_BINTIME                        = 0x2000
++	SO_BROADCAST                      = 0x20
++	SO_DEBUG                          = 0x1
++	SO_DONTROUTE                      = 0x10
++	SO_ERROR                          = 0x1007
++	SO_KEEPALIVE                      = 0x8
++	SO_LABEL                          = 0x1009
++	SO_LINGER                         = 0x80
++	SO_LISTENINCQLEN                  = 0x1013
++	SO_LISTENQLEN                     = 0x1012
++	SO_LISTENQLIMIT                   = 0x1011
++	SO_NOSIGPIPE                      = 0x800
++	SO_NO_DDP                         = 0x8000
++	SO_NO_OFFLOAD                     = 0x4000
++	SO_OOBINLINE                      = 0x100
++	SO_PEERLABEL                      = 0x1010
++	SO_PROTOCOL                       = 0x1016
++	SO_PROTOTYPE                      = 0x1016
++	SO_RCVBUF                         = 0x1002
++	SO_RCVLOWAT                       = 0x1004
++	SO_RCVTIMEO                       = 0x1006
++	SO_REUSEADDR                      = 0x4
++	SO_REUSEPORT                      = 0x200
++	SO_SETFIB                         = 0x1014
++	SO_SNDBUF                         = 0x1001
++	SO_SNDLOWAT                       = 0x1003
++	SO_SNDTIMEO                       = 0x1005
++	SO_TIMESTAMP                      = 0x400
++	SO_TYPE                           = 0x1008
++	SO_USELOOPBACK                    = 0x40
++	SO_USER_COOKIE                    = 0x1015
++	SO_VENDOR                         = 0x80000000
++	TCIFLUSH                          = 0x1
++	TCIOFLUSH                         = 0x3
++	TCOFLUSH                          = 0x2
++	TCP_CA_NAME_MAX                   = 0x10
++	TCP_CONGESTION                    = 0x40
++	TCP_INFO                          = 0x20
++	TCP_KEEPCNT                       = 0x400
++	TCP_KEEPIDLE                      = 0x100
++	TCP_KEEPINIT                      = 0x80
++	TCP_KEEPINTVL                     = 0x200
++	TCP_MAXBURST                      = 0x4
++	TCP_MAXHLEN                       = 0x3c
++	TCP_MAXOLEN                       = 0x28
++	TCP_MAXSEG                        = 0x2
++	TCP_MAXWIN                        = 0xffff
++	TCP_MAX_SACK                      = 0x4
++	TCP_MAX_WINSHIFT                  = 0xe
++	TCP_MD5SIG                        = 0x10
++	TCP_MINMSS                        = 0xd8
++	TCP_MSS                           = 0x218
++	TCP_NODELAY                       = 0x1
++	TCP_NOOPT                         = 0x8
++	TCP_NOPUSH                        = 0x4
++	TCP_VENDOR                        = 0x80000000
++	TCSAFLUSH                         = 0x2
++	TIOCCBRK                          = 0x2000747a
++	TIOCCDTR                          = 0x20007478
++	TIOCCONS                          = 0x80047462
++	TIOCDRAIN                         = 0x2000745e
++	TIOCEXCL                          = 0x2000740d
++	TIOCEXT                           = 0x80047460
++	TIOCFLUSH                         = 0x80047410
++	TIOCGDRAINWAIT                    = 0x40047456
++	TIOCGETA                          = 0x402c7413
++	TIOCGETD                          = 0x4004741a
++	TIOCGPGRP                         = 0x40047477
++	TIOCGPTN                          = 0x4004740f
++	TIOCGSID                          = 0x40047463
++	TIOCGWINSZ                        = 0x40087468
++	TIOCMBIC                          = 0x8004746b
++	TIOCMBIS                          = 0x8004746c
++	TIOCMGDTRWAIT                     = 0x4004745a
++	TIOCMGET                          = 0x4004746a
++	TIOCMSDTRWAIT                     = 0x8004745b
++	TIOCMSET                          = 0x8004746d
++	TIOCM_CAR                         = 0x40
++	TIOCM_CD                          = 0x40
++	TIOCM_CTS                         = 0x20
++	TIOCM_DCD                         = 0x40
++	TIOCM_DSR                         = 0x100
++	TIOCM_DTR                         = 0x2
++	TIOCM_LE                          = 0x1
++	TIOCM_RI                          = 0x80
++	TIOCM_RNG                         = 0x80
++	TIOCM_RTS                         = 0x4
++	TIOCM_SR                          = 0x10
++	TIOCM_ST                          = 0x8
++	TIOCNOTTY                         = 0x20007471
++	TIOCNXCL                          = 0x2000740e
++	TIOCOUTQ                          = 0x40047473
++	TIOCPKT                           = 0x80047470
++	TIOCPKT_DATA                      = 0x0
++	TIOCPKT_DOSTOP                    = 0x20
++	TIOCPKT_FLUSHREAD                 = 0x1
++	TIOCPKT_FLUSHWRITE                = 0x2
++	TIOCPKT_IOCTL                     = 0x40
++	TIOCPKT_NOSTOP                    = 0x10
++	TIOCPKT_START                     = 0x8
++	TIOCPKT_STOP                      = 0x4
++	TIOCPTMASTER                      = 0x2000741c
++	TIOCSBRK                          = 0x2000747b
++	TIOCSCTTY                         = 0x20007461
++	TIOCSDRAINWAIT                    = 0x80047457
++	TIOCSDTR                          = 0x20007479
++	TIOCSETA                          = 0x802c7414
++	TIOCSETAF                         = 0x802c7416
++	TIOCSETAW                         = 0x802c7415
++	TIOCSETD                          = 0x8004741b
++	TIOCSIG                           = 0x2004745f
++	TIOCSPGRP                         = 0x80047476
++	TIOCSTART                         = 0x2000746e
++	TIOCSTAT                          = 0x20007465
++	TIOCSTI                           = 0x80017472
++	TIOCSTOP                          = 0x2000746f
++	TIOCSWINSZ                        = 0x80087467
++	TIOCTIMESTAMP                     = 0x40107459
++	TIOCUCNTL                         = 0x80047466
++	TOSTOP                            = 0x400000
++	VDISCARD                          = 0xf
++	VDSUSP                            = 0xb
++	VEOF                              = 0x0
++	VEOL                              = 0x1
++	VEOL2                             = 0x2
++	VERASE                            = 0x3
++	VERASE2                           = 0x7
++	VINTR                             = 0x8
++	VKILL                             = 0x5
++	VLNEXT                            = 0xe
++	VMIN                              = 0x10
++	VQUIT                             = 0x9
++	VREPRINT                          = 0x6
++	VSTART                            = 0xc
++	VSTATUS                           = 0x12
++	VSTOP                             = 0xd
++	VSUSP                             = 0xa
++	VTIME                             = 0x11
++	VWERASE                           = 0x4
++	WCONTINUED                        = 0x4
++	WCOREFLAG                         = 0x80
++	WEXITED                           = 0x10
++	WLINUXCLONE                       = 0x80000000
++	WNOHANG                           = 0x1
++	WNOWAIT                           = 0x8
++	WSTOPPED                          = 0x2
++	WTRAPPED                          = 0x20
++	WUNTRACED                         = 0x2
++)
++
++// Errors
++const (
++	E2BIG           = Errno(0x7)
++	EACCES          = Errno(0xd)
++	EADDRINUSE      = Errno(0x30)
++	EADDRNOTAVAIL   = Errno(0x31)
++	EAFNOSUPPORT    = Errno(0x2f)
++	EAGAIN          = Errno(0x23)
++	EALREADY        = Errno(0x25)
++	EAUTH           = Errno(0x50)
++	EBADF           = Errno(0x9)
++	EBADMSG         = Errno(0x59)
++	EBADRPC         = Errno(0x48)
++	EBUSY           = Errno(0x10)
++	ECANCELED       = Errno(0x55)
++	ECAPMODE        = Errno(0x5e)
++	ECHILD          = Errno(0xa)
++	ECONNABORTED    = Errno(0x35)
++	ECONNREFUSED    = Errno(0x3d)
++	ECONNRESET      = Errno(0x36)
++	EDEADLK         = Errno(0xb)
++	EDESTADDRREQ    = Errno(0x27)
++	EDOM            = Errno(0x21)
++	EDOOFUS         = Errno(0x58)
++	EDQUOT          = Errno(0x45)
++	EEXIST          = Errno(0x11)
++	EFAULT          = Errno(0xe)
++	EFBIG           = Errno(0x1b)
++	EFTYPE          = Errno(0x4f)
++	EHOSTDOWN       = Errno(0x40)
++	EHOSTUNREACH    = Errno(0x41)
++	EIDRM           = Errno(0x52)
++	EILSEQ          = Errno(0x56)
++	EINPROGRESS     = Errno(0x24)
++	EINTR           = Errno(0x4)
++	EINVAL          = Errno(0x16)
++	EIO             = Errno(0x5)
++	EISCONN         = Errno(0x38)
++	EISDIR          = Errno(0x15)
++	ELAST           = Errno(0x60)
++	ELOOP           = Errno(0x3e)
++	EMFILE          = Errno(0x18)
++	EMLINK          = Errno(0x1f)
++	EMSGSIZE        = Errno(0x28)
++	EMULTIHOP       = Errno(0x5a)
++	ENAMETOOLONG    = Errno(0x3f)
++	ENEEDAUTH       = Errno(0x51)
++	ENETDOWN        = Errno(0x32)
++	ENETRESET       = Errno(0x34)
++	ENETUNREACH     = Errno(0x33)
++	ENFILE          = Errno(0x17)
++	ENOATTR         = Errno(0x57)
++	ENOBUFS         = Errno(0x37)
++	ENODEV          = Errno(0x13)
++	ENOENT          = Errno(0x2)
++	ENOEXEC         = Errno(0x8)
++	ENOLCK          = Errno(0x4d)
++	ENOLINK         = Errno(0x5b)
++	ENOMEM          = Errno(0xc)
++	ENOMSG          = Errno(0x53)
++	ENOPROTOOPT     = Errno(0x2a)
++	ENOSPC          = Errno(0x1c)
++	ENOSYS          = Errno(0x4e)
++	ENOTBLK         = Errno(0xf)
++	ENOTCAPABLE     = Errno(0x5d)
++	ENOTCONN        = Errno(0x39)
++	ENOTDIR         = Errno(0x14)
++	ENOTEMPTY       = Errno(0x42)
++	ENOTRECOVERABLE = Errno(0x5f)
++	ENOTSOCK        = Errno(0x26)
++	ENOTSUP         = Errno(0x2d)
++	ENOTTY          = Errno(0x19)
++	ENXIO           = Errno(0x6)
++	EOPNOTSUPP      = Errno(0x2d)
++	EOVERFLOW       = Errno(0x54)
++	EOWNERDEAD      = Errno(0x60)
++	EPERM           = Errno(0x1)
++	EPFNOSUPPORT    = Errno(0x2e)
++	EPIPE           = Errno(0x20)
++	EPROCLIM        = Errno(0x43)
++	EPROCUNAVAIL    = Errno(0x4c)
++	EPROGMISMATCH   = Errno(0x4b)
++	EPROGUNAVAIL    = Errno(0x4a)
++	EPROTO          = Errno(0x5c)
++	EPROTONOSUPPORT = Errno(0x2b)
++	EPROTOTYPE      = Errno(0x29)
++	ERANGE          = Errno(0x22)
++	EREMOTE         = Errno(0x47)
++	EROFS           = Errno(0x1e)
++	ERPCMISMATCH    = Errno(0x49)
++	ESHUTDOWN       = Errno(0x3a)
++	ESOCKTNOSUPPORT = Errno(0x2c)
++	ESPIPE          = Errno(0x1d)
++	ESRCH           = Errno(0x3)
++	ESTALE          = Errno(0x46)
++	ETIMEDOUT       = Errno(0x3c)
++	ETOOMANYREFS    = Errno(0x3b)
++	ETXTBSY         = Errno(0x1a)
++	EUSERS          = Errno(0x44)
++	EWOULDBLOCK     = Errno(0x23)
++	EXDEV           = Errno(0x12)
++)
++
++// Signals
++const (
++	SIGABRT   = Signal(0x6)
++	SIGALRM   = Signal(0xe)
++	SIGBUS    = Signal(0xa)
++	SIGCHLD   = Signal(0x14)
++	SIGCONT   = Signal(0x13)
++	SIGEMT    = Signal(0x7)
++	SIGFPE    = Signal(0x8)
++	SIGHUP    = Signal(0x1)
++	SIGILL    = Signal(0x4)
++	SIGINFO   = Signal(0x1d)
++	SIGINT    = Signal(0x2)
++	SIGIO     = Signal(0x17)
++	SIGIOT    = Signal(0x6)
++	SIGKILL   = Signal(0x9)
++	SIGLIBRT  = Signal(0x21)
++	SIGLWP    = Signal(0x20)
++	SIGPIPE   = Signal(0xd)
++	SIGPROF   = Signal(0x1b)
++	SIGQUIT   = Signal(0x3)
++	SIGSEGV   = Signal(0xb)
++	SIGSTOP   = Signal(0x11)
++	SIGSYS    = Signal(0xc)
++	SIGTERM   = Signal(0xf)
++	SIGTHR    = Signal(0x20)
++	SIGTRAP   = Signal(0x5)
++	SIGTSTP   = Signal(0x12)
++	SIGTTIN   = Signal(0x15)
++	SIGTTOU   = Signal(0x16)
++	SIGURG    = Signal(0x10)
++	SIGUSR1   = Signal(0x1e)
++	SIGUSR2   = Signal(0x1f)
++	SIGVTALRM = Signal(0x1a)
++	SIGWINCH  = Signal(0x1c)
++	SIGXCPU   = Signal(0x18)
++	SIGXFSZ   = Signal(0x19)
++)
++
++// Error table
++var errors = [...]string{
++	1:  "operation not permitted",
++	2:  "no such file or directory",
++	3:  "no such process",
++	4:  "interrupted system call",
++	5:  "input/output error",
++	6:  "device not configured",
++	7:  "argument list too long",
++	8:  "exec format error",
++	9:  "bad file descriptor",
++	10: "no child processes",
++	11: "resource deadlock avoided",
++	12: "cannot allocate memory",
++	13: "permission denied",
++	14: "bad address",
++	15: "block device required",
++	16: "device busy",
++	17: "file exists",
++	18: "cross-device link",
++	19: "operation not supported by device",
++	20: "not a directory",
++	21: "is a directory",
++	22: "invalid argument",
++	23: "too many open files in system",
++	24: "too many open files",
++	25: "inappropriate ioctl for device",
++	26: "text file busy",
++	27: "file too large",
++	28: "no space left on device",
++	29: "illegal seek",
++	30: "read-only file system",
++	31: "too many links",
++	32: "broken pipe",
++	33: "numerical argument out of domain",
++	34: "result too large",
++	35: "resource temporarily unavailable",
++	36: "operation now in progress",
++	37: "operation already in progress",
++	38: "socket operation on non-socket",
++	39: "destination address required",
++	40: "message too long",
++	41: "protocol wrong type for socket",
++	42: "protocol not available",
++	43: "protocol not supported",
++	44: "socket type not supported",
++	45: "operation not supported",
++	46: "protocol family not supported",
++	47: "address family not supported by protocol family",
++	48: "address already in use",
++	49: "can't assign requested address",
++	50: "network is down",
++	51: "network is unreachable",
++	52: "network dropped connection on reset",
++	53: "software caused connection abort",
++	54: "connection reset by peer",
++	55: "no buffer space available",
++	56: "socket is already connected",
++	57: "socket is not connected",
++	58: "can't send after socket shutdown",
++	59: "too many references: can't splice",
++	60: "operation timed out",
++	61: "connection refused",
++	62: "too many levels of symbolic links",
++	63: "file name too long",
++	64: "host is down",
++	65: "no route to host",
++	66: "directory not empty",
++	67: "too many processes",
++	68: "too many users",
++	69: "disc quota exceeded",
++	70: "stale NFS file handle",
++	71: "too many levels of remote in path",
++	72: "RPC struct is bad",
++	73: "RPC version wrong",
++	74: "RPC prog. not avail",
++	75: "program version wrong",
++	76: "bad procedure for program",
++	77: "no locks available",
++	78: "function not implemented",
++	79: "inappropriate file type or format",
++	80: "authentication error",
++	81: "need authenticator",
++	82: "identifier removed",
++	83: "no message of desired type",
++	84: "value too large to be stored in data type",
++	85: "operation canceled",
++	86: "illegal byte sequence",
++	87: "attribute not found",
++	88: "programming error",
++	89: "bad message",
++	90: "multihop attempted",
++	91: "link has been severed",
++	92: "protocol error",
++	93: "capabilities insufficient",
++	94: "not permitted in capability mode",
++	95: "state not recoverable",
++	96: "previous owner died",
++}
++
++// Signal table
++var signals = [...]string{
++	1:  "hangup",
++	2:  "interrupt",
++	3:  "quit",
++	4:  "illegal instruction",
++	5:  "trace/BPT trap",
++	6:  "abort trap",
++	7:  "EMT trap",
++	8:  "floating point exception",
++	9:  "killed",
++	10: "bus error",
++	11: "segmentation fault",
++	12: "bad system call",
++	13: "broken pipe",
++	14: "alarm clock",
++	15: "terminated",
++	16: "urgent I/O condition",
++	17: "suspended (signal)",
++	18: "suspended",
++	19: "continued",
++	20: "child exited",
++	21: "stopped (tty input)",
++	22: "stopped (tty output)",
++	23: "I/O possible",
++	24: "cputime limit exceeded",
++	25: "filesize limit exceeded",
++	26: "virtual timer expired",
++	27: "profiling timer expired",
++	28: "window size changes",
++	29: "information request",
++	30: "user defined signal 1",
++	31: "user defined signal 2",
++	32: "unknown signal",
++	33: "unknown signal",
++}
+diff --git a/src/syscall/zsyscall_freebsd_arm64.go b/src/syscall/zsyscall_freebsd_arm64.go
+new file mode 100644
+index 0000000000..1b177383c2
+--- /dev/null
++++ b/src/syscall/zsyscall_freebsd_arm64.go
+@@ -0,0 +1,1420 @@
++// mksyscall.pl -tags freebsd,arm64 syscall_bsd.go syscall_freebsd.go syscall_freebsd_arm64.go
++// Code generated by the command above; DO NOT EDIT.
++
++// +build freebsd,arm64
++
++package syscall
++
++import "unsafe"
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func getgroups(ngid int, gid *_Gid_t) (n int, err error) {
++	r0, _, e1 := RawSyscall(SYS_GETGROUPS, uintptr(ngid), uintptr(unsafe.Pointer(gid)), 0)
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func setgroups(ngid int, gid *_Gid_t) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETGROUPS, uintptr(ngid), uintptr(unsafe.Pointer(gid)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func wait4(pid int, wstatus *_C_int, options int, rusage *Rusage) (wpid int, err error) {
++	r0, _, e1 := Syscall6(SYS_WAIT4, uintptr(pid), uintptr(unsafe.Pointer(wstatus)), uintptr(options), uintptr(unsafe.Pointer(rusage)), 0, 0)
++	wpid = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func accept(s int, rsa *RawSockaddrAny, addrlen *_Socklen) (fd int, err error) {
++	r0, _, e1 := Syscall(SYS_ACCEPT, uintptr(s), uintptr(unsafe.Pointer(rsa)), uintptr(unsafe.Pointer(addrlen)))
++	fd = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func bind(s int, addr unsafe.Pointer, addrlen _Socklen) (err error) {
++	_, _, e1 := Syscall(SYS_BIND, uintptr(s), uintptr(addr), uintptr(addrlen))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func connect(s int, addr unsafe.Pointer, addrlen _Socklen) (err error) {
++	_, _, e1 := Syscall(SYS_CONNECT, uintptr(s), uintptr(addr), uintptr(addrlen))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func socket(domain int, typ int, proto int) (fd int, err error) {
++	r0, _, e1 := RawSyscall(SYS_SOCKET, uintptr(domain), uintptr(typ), uintptr(proto))
++	fd = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func getsockopt(s int, level int, name int, val unsafe.Pointer, vallen *_Socklen) (err error) {
++	_, _, e1 := Syscall6(SYS_GETSOCKOPT, uintptr(s), uintptr(level), uintptr(name), uintptr(val), uintptr(unsafe.Pointer(vallen)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func setsockopt(s int, level int, name int, val unsafe.Pointer, vallen uintptr) (err error) {
++	_, _, e1 := Syscall6(SYS_SETSOCKOPT, uintptr(s), uintptr(level), uintptr(name), uintptr(val), uintptr(vallen), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func getpeername(fd int, rsa *RawSockaddrAny, addrlen *_Socklen) (err error) {
++	_, _, e1 := RawSyscall(SYS_GETPEERNAME, uintptr(fd), uintptr(unsafe.Pointer(rsa)), uintptr(unsafe.Pointer(addrlen)))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func getsockname(fd int, rsa *RawSockaddrAny, addrlen *_Socklen) (err error) {
++	_, _, e1 := RawSyscall(SYS_GETSOCKNAME, uintptr(fd), uintptr(unsafe.Pointer(rsa)), uintptr(unsafe.Pointer(addrlen)))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Shutdown(s int, how int) (err error) {
++	_, _, e1 := Syscall(SYS_SHUTDOWN, uintptr(s), uintptr(how), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func socketpair(domain int, typ int, proto int, fd *[2]int32) (err error) {
++	_, _, e1 := RawSyscall6(SYS_SOCKETPAIR, uintptr(domain), uintptr(typ), uintptr(proto), uintptr(unsafe.Pointer(fd)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func recvfrom(fd int, p []byte, flags int, from *RawSockaddrAny, fromlen *_Socklen) (n int, err error) {
++	var _p0 unsafe.Pointer
++	if len(p) > 0 {
++		_p0 = unsafe.Pointer(&p[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	r0, _, e1 := Syscall6(SYS_RECVFROM, uintptr(fd), uintptr(_p0), uintptr(len(p)), uintptr(flags), uintptr(unsafe.Pointer(from)), uintptr(unsafe.Pointer(fromlen)))
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func sendto(s int, buf []byte, flags int, to unsafe.Pointer, addrlen _Socklen) (err error) {
++	var _p0 unsafe.Pointer
++	if len(buf) > 0 {
++		_p0 = unsafe.Pointer(&buf[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	_, _, e1 := Syscall6(SYS_SENDTO, uintptr(s), uintptr(_p0), uintptr(len(buf)), uintptr(flags), uintptr(to), uintptr(addrlen))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func recvmsg(s int, msg *Msghdr, flags int) (n int, err error) {
++	r0, _, e1 := Syscall(SYS_RECVMSG, uintptr(s), uintptr(unsafe.Pointer(msg)), uintptr(flags))
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func sendmsg(s int, msg *Msghdr, flags int) (n int, err error) {
++	r0, _, e1 := Syscall(SYS_SENDMSG, uintptr(s), uintptr(unsafe.Pointer(msg)), uintptr(flags))
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func kevent(kq int, change unsafe.Pointer, nchange int, event unsafe.Pointer, nevent int, timeout *Timespec) (n int, err error) {
++	r0, _, e1 := Syscall6(SYS_KEVENT, uintptr(kq), uintptr(change), uintptr(nchange), uintptr(event), uintptr(nevent), uintptr(unsafe.Pointer(timeout)))
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func sysctl(mib []_C_int, old *byte, oldlen *uintptr, new *byte, newlen uintptr) (err error) {
++	var _p0 unsafe.Pointer
++	if len(mib) > 0 {
++		_p0 = unsafe.Pointer(&mib[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	_, _, e1 := Syscall6(SYS___SYSCTL, uintptr(_p0), uintptr(len(mib)), uintptr(unsafe.Pointer(old)), uintptr(unsafe.Pointer(oldlen)), uintptr(unsafe.Pointer(new)), uintptr(newlen))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func utimes(path string, timeval *[2]Timeval) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_UTIMES, uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(timeval)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func futimes(fd int, timeval *[2]Timeval) (err error) {
++	_, _, e1 := Syscall(SYS_FUTIMES, uintptr(fd), uintptr(unsafe.Pointer(timeval)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func fcntl(fd int, cmd int, arg int) (val int, err error) {
++	r0, _, e1 := Syscall(SYS_FCNTL, uintptr(fd), uintptr(cmd), uintptr(arg))
++	val = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func pipe2(p *[2]_C_int, flags int) (err error) {
++	_, _, e1 := RawSyscall(SYS_PIPE2, uintptr(unsafe.Pointer(p)), uintptr(flags), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Access(path string, mode uint32) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_ACCESS, uintptr(unsafe.Pointer(_p0)), uintptr(mode), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Adjtime(delta *Timeval, olddelta *Timeval) (err error) {
++	_, _, e1 := Syscall(SYS_ADJTIME, uintptr(unsafe.Pointer(delta)), uintptr(unsafe.Pointer(olddelta)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Chdir(path string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_CHDIR, uintptr(unsafe.Pointer(_p0)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Chflags(path string, flags int) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_CHFLAGS, uintptr(unsafe.Pointer(_p0)), uintptr(flags), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Chmod(path string, mode uint32) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_CHMOD, uintptr(unsafe.Pointer(_p0)), uintptr(mode), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Chown(path string, uid int, gid int) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_CHOWN, uintptr(unsafe.Pointer(_p0)), uintptr(uid), uintptr(gid))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Chroot(path string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_CHROOT, uintptr(unsafe.Pointer(_p0)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Close(fd int) (err error) {
++	_, _, e1 := Syscall(SYS_CLOSE, uintptr(fd), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Dup(fd int) (nfd int, err error) {
++	r0, _, e1 := Syscall(SYS_DUP, uintptr(fd), 0, 0)
++	nfd = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Dup2(from int, to int) (err error) {
++	_, _, e1 := Syscall(SYS_DUP2, uintptr(from), uintptr(to), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Fchdir(fd int) (err error) {
++	_, _, e1 := Syscall(SYS_FCHDIR, uintptr(fd), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Fchflags(fd int, flags int) (err error) {
++	_, _, e1 := Syscall(SYS_FCHFLAGS, uintptr(fd), uintptr(flags), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Fchmod(fd int, mode uint32) (err error) {
++	_, _, e1 := Syscall(SYS_FCHMOD, uintptr(fd), uintptr(mode), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Fchown(fd int, uid int, gid int) (err error) {
++	_, _, e1 := Syscall(SYS_FCHOWN, uintptr(fd), uintptr(uid), uintptr(gid))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Flock(fd int, how int) (err error) {
++	_, _, e1 := Syscall(SYS_FLOCK, uintptr(fd), uintptr(how), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Fpathconf(fd int, name int) (val int, err error) {
++	r0, _, e1 := Syscall(SYS_FPATHCONF, uintptr(fd), uintptr(name), 0)
++	val = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func fstat(fd int, stat *stat_freebsd11_t) (err error) {
++	_, _, e1 := Syscall(SYS_FSTAT, uintptr(fd), uintptr(unsafe.Pointer(stat)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func fstat_freebsd12(fd int, stat *Stat_t) (err error) {
++	_, _, e1 := Syscall(_SYS_FSTAT_FREEBSD12, uintptr(fd), uintptr(unsafe.Pointer(stat)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func fstatat(fd int, path string, stat *stat_freebsd11_t, flags int) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall6(SYS_FSTATAT, uintptr(fd), uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(stat)), uintptr(flags), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func fstatat_freebsd12(fd int, path string, stat *Stat_t, flags int) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall6(_SYS_FSTATAT_FREEBSD12, uintptr(fd), uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(stat)), uintptr(flags), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func fstatfs(fd int, stat *statfs_freebsd11_t) (err error) {
++	_, _, e1 := Syscall(SYS_FSTATFS, uintptr(fd), uintptr(unsafe.Pointer(stat)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func fstatfs_freebsd12(fd int, stat *Statfs_t) (err error) {
++	_, _, e1 := Syscall(_SYS_FSTATFS_FREEBSD12, uintptr(fd), uintptr(unsafe.Pointer(stat)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Fsync(fd int) (err error) {
++	_, _, e1 := Syscall(SYS_FSYNC, uintptr(fd), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Ftruncate(fd int, length int64) (err error) {
++	_, _, e1 := Syscall(SYS_FTRUNCATE, uintptr(fd), uintptr(length), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func getdirentries(fd int, buf []byte, basep *uintptr) (n int, err error) {
++	var _p0 unsafe.Pointer
++	if len(buf) > 0 {
++		_p0 = unsafe.Pointer(&buf[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	r0, _, e1 := Syscall6(SYS_GETDIRENTRIES, uintptr(fd), uintptr(_p0), uintptr(len(buf)), uintptr(unsafe.Pointer(basep)), 0, 0)
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func getdirentries_freebsd12(fd int, buf []byte, basep *uint64) (n int, err error) {
++	var _p0 unsafe.Pointer
++	if len(buf) > 0 {
++		_p0 = unsafe.Pointer(&buf[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	r0, _, e1 := Syscall6(_SYS_GETDIRENTRIES_FREEBSD12, uintptr(fd), uintptr(_p0), uintptr(len(buf)), uintptr(unsafe.Pointer(basep)), 0, 0)
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getdtablesize() (size int) {
++	r0, _, _ := Syscall(SYS_GETDTABLESIZE, 0, 0, 0)
++	size = int(r0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getegid() (egid int) {
++	r0, _, _ := RawSyscall(SYS_GETEGID, 0, 0, 0)
++	egid = int(r0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Geteuid() (uid int) {
++	r0, _, _ := RawSyscall(SYS_GETEUID, 0, 0, 0)
++	uid = int(r0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getgid() (gid int) {
++	r0, _, _ := RawSyscall(SYS_GETGID, 0, 0, 0)
++	gid = int(r0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getpgid(pid int) (pgid int, err error) {
++	r0, _, e1 := RawSyscall(SYS_GETPGID, uintptr(pid), 0, 0)
++	pgid = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getpgrp() (pgrp int) {
++	r0, _, _ := RawSyscall(SYS_GETPGRP, 0, 0, 0)
++	pgrp = int(r0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getpid() (pid int) {
++	r0, _, _ := RawSyscall(SYS_GETPID, 0, 0, 0)
++	pid = int(r0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getppid() (ppid int) {
++	r0, _, _ := RawSyscall(SYS_GETPPID, 0, 0, 0)
++	ppid = int(r0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getpriority(which int, who int) (prio int, err error) {
++	r0, _, e1 := Syscall(SYS_GETPRIORITY, uintptr(which), uintptr(who), 0)
++	prio = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getrlimit(which int, lim *Rlimit) (err error) {
++	_, _, e1 := RawSyscall(SYS_GETRLIMIT, uintptr(which), uintptr(unsafe.Pointer(lim)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getrusage(who int, rusage *Rusage) (err error) {
++	_, _, e1 := RawSyscall(SYS_GETRUSAGE, uintptr(who), uintptr(unsafe.Pointer(rusage)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getsid(pid int) (sid int, err error) {
++	r0, _, e1 := RawSyscall(SYS_GETSID, uintptr(pid), 0, 0)
++	sid = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Gettimeofday(tv *Timeval) (err error) {
++	_, _, e1 := RawSyscall(SYS_GETTIMEOFDAY, uintptr(unsafe.Pointer(tv)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Getuid() (uid int) {
++	r0, _, _ := RawSyscall(SYS_GETUID, 0, 0, 0)
++	uid = int(r0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Issetugid() (tainted bool) {
++	r0, _, _ := Syscall(SYS_ISSETUGID, 0, 0, 0)
++	tainted = bool(r0 != 0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Kill(pid int, signum Signal) (err error) {
++	_, _, e1 := Syscall(SYS_KILL, uintptr(pid), uintptr(signum), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Kqueue() (fd int, err error) {
++	r0, _, e1 := Syscall(SYS_KQUEUE, 0, 0, 0)
++	fd = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Lchown(path string, uid int, gid int) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_LCHOWN, uintptr(unsafe.Pointer(_p0)), uintptr(uid), uintptr(gid))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Link(path string, link string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	var _p1 *byte
++	_p1, err = BytePtrFromString(link)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_LINK, uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(_p1)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Listen(s int, backlog int) (err error) {
++	_, _, e1 := Syscall(SYS_LISTEN, uintptr(s), uintptr(backlog), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func lstat(path string, stat *stat_freebsd11_t) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_LSTAT, uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(stat)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Mkdir(path string, mode uint32) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_MKDIR, uintptr(unsafe.Pointer(_p0)), uintptr(mode), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Mkfifo(path string, mode uint32) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_MKFIFO, uintptr(unsafe.Pointer(_p0)), uintptr(mode), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func mknod(path string, mode uint32, dev int) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_MKNOD, uintptr(unsafe.Pointer(_p0)), uintptr(mode), uintptr(dev))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func mknodat_freebsd12(fd int, path string, mode uint32, dev uint64) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall6(_SYS_MKNODAT_FREEBSD12, uintptr(fd), uintptr(unsafe.Pointer(_p0)), uintptr(mode), uintptr(dev), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Nanosleep(time *Timespec, leftover *Timespec) (err error) {
++	_, _, e1 := Syscall(SYS_NANOSLEEP, uintptr(unsafe.Pointer(time)), uintptr(unsafe.Pointer(leftover)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Open(path string, mode int, perm uint32) (fd int, err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	r0, _, e1 := Syscall(SYS_OPEN, uintptr(unsafe.Pointer(_p0)), uintptr(mode), uintptr(perm))
++	fd = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Pathconf(path string, name int) (val int, err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	r0, _, e1 := Syscall(SYS_PATHCONF, uintptr(unsafe.Pointer(_p0)), uintptr(name), 0)
++	val = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Pread(fd int, p []byte, offset int64) (n int, err error) {
++	var _p0 unsafe.Pointer
++	if len(p) > 0 {
++		_p0 = unsafe.Pointer(&p[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	r0, _, e1 := Syscall6(SYS_PREAD, uintptr(fd), uintptr(_p0), uintptr(len(p)), uintptr(offset), 0, 0)
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Pwrite(fd int, p []byte, offset int64) (n int, err error) {
++	var _p0 unsafe.Pointer
++	if len(p) > 0 {
++		_p0 = unsafe.Pointer(&p[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	r0, _, e1 := Syscall6(SYS_PWRITE, uintptr(fd), uintptr(_p0), uintptr(len(p)), uintptr(offset), 0, 0)
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func read(fd int, p []byte) (n int, err error) {
++	var _p0 unsafe.Pointer
++	if len(p) > 0 {
++		_p0 = unsafe.Pointer(&p[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	r0, _, e1 := Syscall(SYS_READ, uintptr(fd), uintptr(_p0), uintptr(len(p)))
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Readlink(path string, buf []byte) (n int, err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	var _p1 unsafe.Pointer
++	if len(buf) > 0 {
++		_p1 = unsafe.Pointer(&buf[0])
++	} else {
++		_p1 = unsafe.Pointer(&_zero)
++	}
++	r0, _, e1 := Syscall(SYS_READLINK, uintptr(unsafe.Pointer(_p0)), uintptr(_p1), uintptr(len(buf)))
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Rename(from string, to string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(from)
++	if err != nil {
++		return
++	}
++	var _p1 *byte
++	_p1, err = BytePtrFromString(to)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_RENAME, uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(_p1)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Revoke(path string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_REVOKE, uintptr(unsafe.Pointer(_p0)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Rmdir(path string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_RMDIR, uintptr(unsafe.Pointer(_p0)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Seek(fd int, offset int64, whence int) (newoffset int64, err error) {
++	r0, _, e1 := Syscall(SYS_LSEEK, uintptr(fd), uintptr(offset), uintptr(whence))
++	newoffset = int64(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Select(n int, r *FdSet, w *FdSet, e *FdSet, timeout *Timeval) (err error) {
++	_, _, e1 := Syscall6(SYS_SELECT, uintptr(n), uintptr(unsafe.Pointer(r)), uintptr(unsafe.Pointer(w)), uintptr(unsafe.Pointer(e)), uintptr(unsafe.Pointer(timeout)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setegid(egid int) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETEGID, uintptr(egid), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Seteuid(euid int) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETEUID, uintptr(euid), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setgid(gid int) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETGID, uintptr(gid), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setlogin(name string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(name)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_SETLOGIN, uintptr(unsafe.Pointer(_p0)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setpgid(pid int, pgid int) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETPGID, uintptr(pid), uintptr(pgid), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setpriority(which int, who int, prio int) (err error) {
++	_, _, e1 := Syscall(SYS_SETPRIORITY, uintptr(which), uintptr(who), uintptr(prio))
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setregid(rgid int, egid int) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETREGID, uintptr(rgid), uintptr(egid), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setreuid(ruid int, euid int) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETREUID, uintptr(ruid), uintptr(euid), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setrlimit(which int, lim *Rlimit) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETRLIMIT, uintptr(which), uintptr(unsafe.Pointer(lim)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setsid() (pid int, err error) {
++	r0, _, e1 := RawSyscall(SYS_SETSID, 0, 0, 0)
++	pid = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Settimeofday(tp *Timeval) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETTIMEOFDAY, uintptr(unsafe.Pointer(tp)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Setuid(uid int) (err error) {
++	_, _, e1 := RawSyscall(SYS_SETUID, uintptr(uid), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func stat(path string, stat *stat_freebsd11_t) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_STAT, uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(stat)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func statfs(path string, stat *statfs_freebsd11_t) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_STATFS, uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(stat)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func statfs_freebsd12(path string, stat *Statfs_t) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(_SYS_STATFS_FREEBSD12, uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(stat)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Symlink(path string, link string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	var _p1 *byte
++	_p1, err = BytePtrFromString(link)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_SYMLINK, uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(_p1)), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Sync() (err error) {
++	_, _, e1 := Syscall(SYS_SYNC, 0, 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Truncate(path string, length int64) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_TRUNCATE, uintptr(unsafe.Pointer(_p0)), uintptr(length), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Umask(newmask int) (oldmask int) {
++	r0, _, _ := Syscall(SYS_UMASK, uintptr(newmask), 0, 0)
++	oldmask = int(r0)
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Undelete(path string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_UNDELETE, uintptr(unsafe.Pointer(_p0)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Unlink(path string) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_UNLINK, uintptr(unsafe.Pointer(_p0)), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func Unmount(path string, flags int) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall(SYS_UNMOUNT, uintptr(unsafe.Pointer(_p0)), uintptr(flags), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func write(fd int, p []byte) (n int, err error) {
++	var _p0 unsafe.Pointer
++	if len(p) > 0 {
++		_p0 = unsafe.Pointer(&p[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	r0, _, e1 := Syscall(SYS_WRITE, uintptr(fd), uintptr(_p0), uintptr(len(p)))
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func mmap(addr uintptr, length uintptr, prot int, flag int, fd int, pos int64) (ret uintptr, err error) {
++	r0, _, e1 := Syscall6(SYS_MMAP, uintptr(addr), uintptr(length), uintptr(prot), uintptr(flag), uintptr(fd), uintptr(pos))
++	ret = uintptr(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func munmap(addr uintptr, length uintptr) (err error) {
++	_, _, e1 := Syscall(SYS_MUNMAP, uintptr(addr), uintptr(length), 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func readlen(fd int, buf *byte, nbuf int) (n int, err error) {
++	r0, _, e1 := Syscall(SYS_READ, uintptr(fd), uintptr(unsafe.Pointer(buf)), uintptr(nbuf))
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func writelen(fd int, buf *byte, nbuf int) (n int, err error) {
++	r0, _, e1 := Syscall(SYS_WRITE, uintptr(fd), uintptr(unsafe.Pointer(buf)), uintptr(nbuf))
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func accept4(fd int, rsa *RawSockaddrAny, addrlen *_Socklen, flags int) (nfd int, err error) {
++	r0, _, e1 := Syscall6(SYS_ACCEPT4, uintptr(fd), uintptr(unsafe.Pointer(rsa)), uintptr(unsafe.Pointer(addrlen)), uintptr(flags), 0, 0)
++	nfd = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func utimensat(dirfd int, path string, times *[2]Timespec, flag int) (err error) {
++	var _p0 *byte
++	_p0, err = BytePtrFromString(path)
++	if err != nil {
++		return
++	}
++	_, _, e1 := Syscall6(SYS_UTIMENSAT, uintptr(dirfd), uintptr(unsafe.Pointer(_p0)), uintptr(unsafe.Pointer(times)), uintptr(flag), 0, 0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
++
++// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
++
++func getcwd(buf []byte) (n int, err error) {
++	var _p0 unsafe.Pointer
++	if len(buf) > 0 {
++		_p0 = unsafe.Pointer(&buf[0])
++	} else {
++		_p0 = unsafe.Pointer(&_zero)
++	}
++	r0, _, e1 := Syscall(SYS___GETCWD, uintptr(_p0), uintptr(len(buf)), 0)
++	n = int(r0)
++	if e1 != 0 {
++		err = errnoErr(e1)
++	}
++	return
++}
+diff --git a/src/syscall/zsysnum_freebsd_arm64.go b/src/syscall/zsysnum_freebsd_arm64.go
+new file mode 100644
+index 0000000000..cb456cd568
+--- /dev/null
++++ b/src/syscall/zsysnum_freebsd_arm64.go
+@@ -0,0 +1,351 @@
++// mksysnum_freebsd.pl
++// Code generated by the command above; DO NOT EDIT.
++
++// +build arm64,freebsd
++
++package syscall
++
++const (
++	// SYS_NOSYS = 0;  // { int nosys(void); } syscall nosys_args int
++	SYS_EXIT                     = 1   // { void sys_exit(int rval); } exit \
++	SYS_FORK                     = 2   // { int fork(void); }
++	SYS_READ                     = 3   // { ssize_t read(int fd, void *buf, \
++	SYS_WRITE                    = 4   // { ssize_t write(int fd, const void *buf, \
++	SYS_OPEN                     = 5   // { int open(char *path, int flags, int mode); }
++	SYS_CLOSE                    = 6   // { int close(int fd); }
++	SYS_WAIT4                    = 7   // { int wait4(int pid, int *status, \
++	SYS_LINK                     = 9   // { int link(char *path, char *link); }
++	SYS_UNLINK                   = 10  // { int unlink(char *path); }
++	SYS_CHDIR                    = 12  // { int chdir(char *path); }
++	SYS_FCHDIR                   = 13  // { int fchdir(int fd); }
++	SYS_MKNOD                    = 14  // { int mknod(char *path, int mode, int dev); }
++	SYS_CHMOD                    = 15  // { int chmod(char *path, int mode); }
++	SYS_CHOWN                    = 16  // { int chown(char *path, int uid, int gid); }
++	SYS_OBREAK                   = 17  // { int obreak(char *nsize); } break \
++	SYS_GETPID                   = 20  // { pid_t getpid(void); }
++	SYS_MOUNT                    = 21  // { int mount(char *type, char *path, \
++	SYS_UNMOUNT                  = 22  // { int unmount(char *path, int flags); }
++	SYS_SETUID                   = 23  // { int setuid(uid_t uid); }
++	SYS_GETUID                   = 24  // { uid_t getuid(void); }
++	SYS_GETEUID                  = 25  // { uid_t geteuid(void); }
++	SYS_PTRACE                   = 26  // { int ptrace(int req, pid_t pid, \
++	SYS_RECVMSG                  = 27  // { int recvmsg(int s, struct msghdr *msg, \
++	SYS_SENDMSG                  = 28  // { int sendmsg(int s, struct msghdr *msg, \
++	SYS_RECVFROM                 = 29  // { int recvfrom(int s, caddr_t buf, \
++	SYS_ACCEPT                   = 30  // { int accept(int s, \
++	SYS_GETPEERNAME              = 31  // { int getpeername(int fdes, \
++	SYS_GETSOCKNAME              = 32  // { int getsockname(int fdes, \
++	SYS_ACCESS                   = 33  // { int access(char *path, int amode); }
++	SYS_CHFLAGS                  = 34  // { int chflags(const char *path, u_long flags); }
++	SYS_FCHFLAGS                 = 35  // { int fchflags(int fd, u_long flags); }
++	SYS_SYNC                     = 36  // { int sync(void); }
++	SYS_KILL                     = 37  // { int kill(int pid, int signum); }
++	SYS_GETPPID                  = 39  // { pid_t getppid(void); }
++	SYS_DUP                      = 41  // { int dup(u_int fd); }
++	SYS_PIPE                     = 42  // { int pipe(void); }
++	SYS_GETEGID                  = 43  // { gid_t getegid(void); }
++	SYS_PROFIL                   = 44  // { int profil(caddr_t samples, size_t size, \
++	SYS_KTRACE                   = 45  // { int ktrace(const char *fname, int ops, \
++	SYS_GETGID                   = 47  // { gid_t getgid(void); }
++	SYS_GETLOGIN                 = 49  // { int getlogin(char *namebuf, u_int \
++	SYS_SETLOGIN                 = 50  // { int setlogin(char *namebuf); }
++	SYS_ACCT                     = 51  // { int acct(char *path); }
++	SYS_SIGALTSTACK              = 53  // { int sigaltstack(stack_t *ss, \
++	SYS_IOCTL                    = 54  // { int ioctl(int fd, u_long com, \
++	SYS_REBOOT                   = 55  // { int reboot(int opt); }
++	SYS_REVOKE                   = 56  // { int revoke(char *path); }
++	SYS_SYMLINK                  = 57  // { int symlink(char *path, char *link); }
++	SYS_READLINK                 = 58  // { ssize_t readlink(char *path, char *buf, \
++	SYS_EXECVE                   = 59  // { int execve(char *fname, char **argv, \
++	SYS_UMASK                    = 60  // { int umask(int newmask); } umask umask_args \
++	SYS_CHROOT                   = 61  // { int chroot(char *path); }
++	SYS_MSYNC                    = 65  // { int msync(void *addr, size_t len, \
++	SYS_VFORK                    = 66  // { int vfork(void); }
++	SYS_SBRK                     = 69  // { int sbrk(int incr); }
++	SYS_SSTK                     = 70  // { int sstk(int incr); }
++	SYS_OVADVISE                 = 72  // { int ovadvise(int anom); } vadvise \
++	SYS_MUNMAP                   = 73  // { int munmap(void *addr, size_t len); }
++	SYS_MPROTECT                 = 74  // { int mprotect(const void *addr, size_t len, \
++	SYS_MADVISE                  = 75  // { int madvise(void *addr, size_t len, \
++	SYS_MINCORE                  = 78  // { int mincore(const void *addr, size_t len, \
++	SYS_GETGROUPS                = 79  // { int getgroups(u_int gidsetsize, \
++	SYS_SETGROUPS                = 80  // { int setgroups(u_int gidsetsize, \
++	SYS_GETPGRP                  = 81  // { int getpgrp(void); }
++	SYS_SETPGID                  = 82  // { int setpgid(int pid, int pgid); }
++	SYS_SETITIMER                = 83  // { int setitimer(u_int which, struct \
++	SYS_SWAPON                   = 85  // { int swapon(char *name); }
++	SYS_GETITIMER                = 86  // { int getitimer(u_int which, \
++	SYS_GETDTABLESIZE            = 89  // { int getdtablesize(void); }
++	SYS_DUP2                     = 90  // { int dup2(u_int from, u_int to); }
++	SYS_FCNTL                    = 92  // { int fcntl(int fd, int cmd, long arg); }
++	SYS_SELECT                   = 93  // { int select(int nd, fd_set *in, fd_set *ou, \
++	SYS_FSYNC                    = 95  // { int fsync(int fd); }
++	SYS_SETPRIORITY              = 96  // { int setpriority(int which, int who, \
++	SYS_SOCKET                   = 97  // { int socket(int domain, int type, \
++	SYS_CONNECT                  = 98  // { int connect(int s, caddr_t name, \
++	SYS_GETPRIORITY              = 100 // { int getpriority(int which, int who); }
++	SYS_BIND                     = 104 // { int bind(int s, caddr_t name, \
++	SYS_SETSOCKOPT               = 105 // { int setsockopt(int s, int level, int name, \
++	SYS_LISTEN                   = 106 // { int listen(int s, int backlog); }
++	SYS_GETTIMEOFDAY             = 116 // { int gettimeofday(struct timeval *tp, \
++	SYS_GETRUSAGE                = 117 // { int getrusage(int who, \
++	SYS_GETSOCKOPT               = 118 // { int getsockopt(int s, int level, int name, \
++	SYS_READV                    = 120 // { int readv(int fd, struct iovec *iovp, \
++	SYS_WRITEV                   = 121 // { int writev(int fd, struct iovec *iovp, \
++	SYS_SETTIMEOFDAY             = 122 // { int settimeofday(struct timeval *tv, \
++	SYS_FCHOWN                   = 123 // { int fchown(int fd, int uid, int gid); }
++	SYS_FCHMOD                   = 124 // { int fchmod(int fd, int mode); }
++	SYS_SETREUID                 = 126 // { int setreuid(int ruid, int euid); }
++	SYS_SETREGID                 = 127 // { int setregid(int rgid, int egid); }
++	SYS_RENAME                   = 128 // { int rename(char *from, char *to); }
++	SYS_FLOCK                    = 131 // { int flock(int fd, int how); }
++	SYS_MKFIFO                   = 132 // { int mkfifo(char *path, int mode); }
++	SYS_SENDTO                   = 133 // { int sendto(int s, caddr_t buf, size_t len, \
++	SYS_SHUTDOWN                 = 134 // { int shutdown(int s, int how); }
++	SYS_SOCKETPAIR               = 135 // { int socketpair(int domain, int type, \
++	SYS_MKDIR                    = 136 // { int mkdir(char *path, int mode); }
++	SYS_RMDIR                    = 137 // { int rmdir(char *path); }
++	SYS_UTIMES                   = 138 // { int utimes(char *path, \
++	SYS_ADJTIME                  = 140 // { int adjtime(struct timeval *delta, \
++	SYS_SETSID                   = 147 // { int setsid(void); }
++	SYS_QUOTACTL                 = 148 // { int quotactl(char *path, int cmd, int uid, \
++	SYS_LGETFH                   = 160 // { int lgetfh(char *fname, \
++	SYS_GETFH                    = 161 // { int getfh(char *fname, \
++	SYS_SYSARCH                  = 165 // { int sysarch(int op, char *parms); }
++	SYS_RTPRIO                   = 166 // { int rtprio(int function, pid_t pid, \
++	SYS_FREEBSD6_PREAD           = 173 // { ssize_t freebsd6_pread(int fd, void *buf, \
++	SYS_FREEBSD6_PWRITE          = 174 // { ssize_t freebsd6_pwrite(int fd, \
++	SYS_SETFIB                   = 175 // { int setfib(int fibnum); }
++	SYS_NTP_ADJTIME              = 176 // { int ntp_adjtime(struct timex *tp); }
++	SYS_SETGID                   = 181 // { int setgid(gid_t gid); }
++	SYS_SETEGID                  = 182 // { int setegid(gid_t egid); }
++	SYS_SETEUID                  = 183 // { int seteuid(uid_t euid); }
++	SYS_STAT                     = 188 // { int stat(char *path, struct stat *ub); }
++	SYS_FSTAT                    = 189 // { int fstat(int fd, struct stat *sb); }
++	SYS_LSTAT                    = 190 // { int lstat(char *path, struct stat *ub); }
++	SYS_PATHCONF                 = 191 // { int pathconf(char *path, int name); }
++	SYS_FPATHCONF                = 192 // { int fpathconf(int fd, int name); }
++	SYS_GETRLIMIT                = 194 // { int getrlimit(u_int which, \
++	SYS_SETRLIMIT                = 195 // { int setrlimit(u_int which, \
++	SYS_GETDIRENTRIES            = 196 // { int getdirentries(int fd, char *buf, \
++	SYS_FREEBSD6_MMAP            = 197 // { caddr_t freebsd6_mmap(caddr_t addr, \
++	SYS_FREEBSD6_LSEEK           = 199 // { off_t freebsd6_lseek(int fd, int pad, \
++	SYS_FREEBSD6_TRUNCATE        = 200 // { int freebsd6_truncate(char *path, int pad, \
++	SYS_FREEBSD6_FTRUNCATE       = 201 // { int freebsd6_ftruncate(int fd, int pad, \
++	SYS___SYSCTL                 = 202 // { int __sysctl(int *name, u_int namelen, \
++	SYS_MLOCK                    = 203 // { int mlock(const void *addr, size_t len); }
++	SYS_MUNLOCK                  = 204 // { int munlock(const void *addr, size_t len); }
++	SYS_UNDELETE                 = 205 // { int undelete(char *path); }
++	SYS_FUTIMES                  = 206 // { int futimes(int fd, struct timeval *tptr); }
++	SYS_GETPGID                  = 207 // { int getpgid(pid_t pid); }
++	SYS_POLL                     = 209 // { int poll(struct pollfd *fds, u_int nfds, \
++	SYS_CLOCK_GETTIME            = 232 // { int clock_gettime(clockid_t clock_id, \
++	SYS_CLOCK_SETTIME            = 233 // { int clock_settime( \
++	SYS_CLOCK_GETRES             = 234 // { int clock_getres(clockid_t clock_id, \
++	SYS_KTIMER_CREATE            = 235 // { int ktimer_create(clockid_t clock_id, \
++	SYS_KTIMER_DELETE            = 236 // { int ktimer_delete(int timerid); }
++	SYS_KTIMER_SETTIME           = 237 // { int ktimer_settime(int timerid, int flags, \
++	SYS_KTIMER_GETTIME           = 238 // { int ktimer_gettime(int timerid, struct \
++	SYS_KTIMER_GETOVERRUN        = 239 // { int ktimer_getoverrun(int timerid); }
++	SYS_NANOSLEEP                = 240 // { int nanosleep(const struct timespec *rqtp, \
++	SYS_FFCLOCK_GETCOUNTER       = 241 // { int ffclock_getcounter(ffcounter *ffcount); }
++	SYS_FFCLOCK_SETESTIMATE      = 242 // { int ffclock_setestimate( \
++	SYS_FFCLOCK_GETESTIMATE      = 243 // { int ffclock_getestimate( \
++	SYS_CLOCK_GETCPUCLOCKID2     = 247 // { int clock_getcpuclockid2(id_t id,\
++	SYS_NTP_GETTIME              = 248 // { int ntp_gettime(struct ntptimeval *ntvp); }
++	SYS_MINHERIT                 = 250 // { int minherit(void *addr, size_t len, \
++	SYS_RFORK                    = 251 // { int rfork(int flags); }
++	SYS_OPENBSD_POLL             = 252 // { int openbsd_poll(struct pollfd *fds, \
++	SYS_ISSETUGID                = 253 // { int issetugid(void); }
++	SYS_LCHOWN                   = 254 // { int lchown(char *path, int uid, int gid); }
++	SYS_GETDENTS                 = 272 // { int getdents(int fd, char *buf, \
++	SYS_LCHMOD                   = 274 // { int lchmod(char *path, mode_t mode); }
++	SYS_LUTIMES                  = 276 // { int lutimes(char *path, \
++	SYS_NSTAT                    = 278 // { int nstat(char *path, struct nstat *ub); }
++	SYS_NFSTAT                   = 279 // { int nfstat(int fd, struct nstat *sb); }
++	SYS_NLSTAT                   = 280 // { int nlstat(char *path, struct nstat *ub); }
++	SYS_PREADV                   = 289 // { ssize_t preadv(int fd, struct iovec *iovp, \
++	SYS_PWRITEV                  = 290 // { ssize_t pwritev(int fd, struct iovec *iovp, \
++	SYS_FHOPEN                   = 298 // { int fhopen(const struct fhandle *u_fhp, \
++	SYS_FHSTAT                   = 299 // { int fhstat(const struct fhandle *u_fhp, \
++	SYS_MODNEXT                  = 300 // { int modnext(int modid); }
++	SYS_MODSTAT                  = 301 // { int modstat(int modid, \
++	SYS_MODFNEXT                 = 302 // { int modfnext(int modid); }
++	SYS_MODFIND                  = 303 // { int modfind(const char *name); }
++	SYS_KLDLOAD                  = 304 // { int kldload(const char *file); }
++	SYS_KLDUNLOAD                = 305 // { int kldunload(int fileid); }
++	SYS_KLDFIND                  = 306 // { int kldfind(const char *file); }
++	SYS_KLDNEXT                  = 307 // { int kldnext(int fileid); }
++	SYS_KLDSTAT                  = 308 // { int kldstat(int fileid, struct \
++	SYS_KLDFIRSTMOD              = 309 // { int kldfirstmod(int fileid); }
++	SYS_GETSID                   = 310 // { int getsid(pid_t pid); }
++	SYS_SETRESUID                = 311 // { int setresuid(uid_t ruid, uid_t euid, \
++	SYS_SETRESGID                = 312 // { int setresgid(gid_t rgid, gid_t egid, \
++	SYS_YIELD                    = 321 // { int yield(void); }
++	SYS_MLOCKALL                 = 324 // { int mlockall(int how); }
++	SYS_MUNLOCKALL               = 325 // { int munlockall(void); }
++	SYS___GETCWD                 = 326 // { int __getcwd(u_char *buf, u_int buflen); }
++	SYS_SCHED_SETPARAM           = 327 // { int sched_setparam (pid_t pid, \
++	SYS_SCHED_GETPARAM           = 328 // { int sched_getparam (pid_t pid, struct \
++	SYS_SCHED_SETSCHEDULER       = 329 // { int sched_setscheduler (pid_t pid, int \
++	SYS_SCHED_GETSCHEDULER       = 330 // { int sched_getscheduler (pid_t pid); }
++	SYS_SCHED_YIELD              = 331 // { int sched_yield (void); }
++	SYS_SCHED_GET_PRIORITY_MAX   = 332 // { int sched_get_priority_max (int policy); }
++	SYS_SCHED_GET_PRIORITY_MIN   = 333 // { int sched_get_priority_min (int policy); }
++	SYS_SCHED_RR_GET_INTERVAL    = 334 // { int sched_rr_get_interval (pid_t pid, \
++	SYS_UTRACE                   = 335 // { int utrace(const void *addr, size_t len); }
++	SYS_KLDSYM                   = 337 // { int kldsym(int fileid, int cmd, \
++	SYS_JAIL                     = 338 // { int jail(struct jail *jail); }
++	SYS_SIGPROCMASK              = 340 // { int sigprocmask(int how, \
++	SYS_SIGSUSPEND               = 341 // { int sigsuspend(const sigset_t *sigmask); }
++	SYS_SIGPENDING               = 343 // { int sigpending(sigset_t *set); }
++	SYS_SIGTIMEDWAIT             = 345 // { int sigtimedwait(const sigset_t *set, \
++	SYS_SIGWAITINFO              = 346 // { int sigwaitinfo(const sigset_t *set, \
++	SYS___ACL_GET_FILE           = 347 // { int __acl_get_file(const char *path, \
++	SYS___ACL_SET_FILE           = 348 // { int __acl_set_file(const char *path, \
++	SYS___ACL_GET_FD             = 349 // { int __acl_get_fd(int filedes, \
++	SYS___ACL_SET_FD             = 350 // { int __acl_set_fd(int filedes, \
++	SYS___ACL_DELETE_FILE        = 351 // { int __acl_delete_file(const char *path, \
++	SYS___ACL_DELETE_FD          = 352 // { int __acl_delete_fd(int filedes, \
++	SYS___ACL_ACLCHECK_FILE      = 353 // { int __acl_aclcheck_file(const char *path, \
++	SYS___ACL_ACLCHECK_FD        = 354 // { int __acl_aclcheck_fd(int filedes, \
++	SYS_EXTATTRCTL               = 355 // { int extattrctl(const char *path, int cmd, \
++	SYS_EXTATTR_SET_FILE         = 356 // { ssize_t extattr_set_file( \
++	SYS_EXTATTR_GET_FILE         = 357 // { ssize_t extattr_get_file( \
++	SYS_EXTATTR_DELETE_FILE      = 358 // { int extattr_delete_file(const char *path, \
++	SYS_GETRESUID                = 360 // { int getresuid(uid_t *ruid, uid_t *euid, \
++	SYS_GETRESGID                = 361 // { int getresgid(gid_t *rgid, gid_t *egid, \
++	SYS_KQUEUE                   = 362 // { int kqueue(void); }
++	SYS_KEVENT                   = 363 // { int kevent(int fd, \
++	SYS_EXTATTR_SET_FD           = 371 // { ssize_t extattr_set_fd(int fd, \
++	SYS_EXTATTR_GET_FD           = 372 // { ssize_t extattr_get_fd(int fd, \
++	SYS_EXTATTR_DELETE_FD        = 373 // { int extattr_delete_fd(int fd, \
++	SYS___SETUGID                = 374 // { int __setugid(int flag); }
++	SYS_EACCESS                  = 376 // { int eaccess(char *path, int amode); }
++	SYS_NMOUNT                   = 378 // { int nmount(struct iovec *iovp, \
++	SYS___MAC_GET_PROC           = 384 // { int __mac_get_proc(struct mac *mac_p); }
++	SYS___MAC_SET_PROC           = 385 // { int __mac_set_proc(struct mac *mac_p); }
++	SYS___MAC_GET_FD             = 386 // { int __mac_get_fd(int fd, \
++	SYS___MAC_GET_FILE           = 387 // { int __mac_get_file(const char *path_p, \
++	SYS___MAC_SET_FD             = 388 // { int __mac_set_fd(int fd, \
++	SYS___MAC_SET_FILE           = 389 // { int __mac_set_file(const char *path_p, \
++	SYS_KENV                     = 390 // { int kenv(int what, const char *name, \
++	SYS_LCHFLAGS                 = 391 // { int lchflags(const char *path, \
++	SYS_UUIDGEN                  = 392 // { int uuidgen(struct uuid *store, \
++	SYS_SENDFILE                 = 393 // { int sendfile(int fd, int s, off_t offset, \
++	SYS_MAC_SYSCALL              = 394 // { int mac_syscall(const char *policy, \
++	SYS_GETFSSTAT                = 395 // { int getfsstat(struct statfs *buf, \
++	SYS_STATFS                   = 396 // { int statfs(char *path, \
++	SYS_FSTATFS                  = 397 // { int fstatfs(int fd, struct statfs *buf); }
++	SYS_FHSTATFS                 = 398 // { int fhstatfs(const struct fhandle *u_fhp, \
++	SYS___MAC_GET_PID            = 409 // { int __mac_get_pid(pid_t pid, \
++	SYS___MAC_GET_LINK           = 410 // { int __mac_get_link(const char *path_p, \
++	SYS___MAC_SET_LINK           = 411 // { int __mac_set_link(const char *path_p, \
++	SYS_EXTATTR_SET_LINK         = 412 // { ssize_t extattr_set_link( \
++	SYS_EXTATTR_GET_LINK         = 413 // { ssize_t extattr_get_link( \
++	SYS_EXTATTR_DELETE_LINK      = 414 // { int extattr_delete_link( \
++	SYS___MAC_EXECVE             = 415 // { int __mac_execve(char *fname, char **argv, \
++	SYS_SIGACTION                = 416 // { int sigaction(int sig, \
++	SYS_SIGRETURN                = 417 // { int sigreturn( \
++	SYS_GETCONTEXT               = 421 // { int getcontext(struct __ucontext *ucp); }
++	SYS_SETCONTEXT               = 422 // { int setcontext( \
++	SYS_SWAPCONTEXT              = 423 // { int swapcontext(struct __ucontext *oucp, \
++	SYS_SWAPOFF                  = 424 // { int swapoff(const char *name); }
++	SYS___ACL_GET_LINK           = 425 // { int __acl_get_link(const char *path, \
++	SYS___ACL_SET_LINK           = 426 // { int __acl_set_link(const char *path, \
++	SYS___ACL_DELETE_LINK        = 427 // { int __acl_delete_link(const char *path, \
++	SYS___ACL_ACLCHECK_LINK      = 428 // { int __acl_aclcheck_link(const char *path, \
++	SYS_SIGWAIT                  = 429 // { int sigwait(const sigset_t *set, \
++	SYS_THR_CREATE               = 430 // { int thr_create(ucontext_t *ctx, long *id, \
++	SYS_THR_EXIT                 = 431 // { void thr_exit(long *state); }
++	SYS_THR_SELF                 = 432 // { int thr_self(long *id); }
++	SYS_THR_KILL                 = 433 // { int thr_kill(long id, int sig); }
++	SYS__UMTX_LOCK               = 434 // { int _umtx_lock(struct umtx *umtx); }
++	SYS__UMTX_UNLOCK             = 435 // { int _umtx_unlock(struct umtx *umtx); }
++	SYS_JAIL_ATTACH              = 436 // { int jail_attach(int jid); }
++	SYS_EXTATTR_LIST_FD          = 437 // { ssize_t extattr_list_fd(int fd, \
++	SYS_EXTATTR_LIST_FILE        = 438 // { ssize_t extattr_list_file( \
++	SYS_EXTATTR_LIST_LINK        = 439 // { ssize_t extattr_list_link( \
++	SYS_THR_SUSPEND              = 442 // { int thr_suspend( \
++	SYS_THR_WAKE                 = 443 // { int thr_wake(long id); }
++	SYS_KLDUNLOADF               = 444 // { int kldunloadf(int fileid, int flags); }
++	SYS_AUDIT                    = 445 // { int audit(const void *record, \
++	SYS_AUDITON                  = 446 // { int auditon(int cmd, void *data, \
++	SYS_GETAUID                  = 447 // { int getauid(uid_t *auid); }
++	SYS_SETAUID                  = 448 // { int setauid(uid_t *auid); }
++	SYS_GETAUDIT                 = 449 // { int getaudit(struct auditinfo *auditinfo); }
++	SYS_SETAUDIT                 = 450 // { int setaudit(struct auditinfo *auditinfo); }
++	SYS_GETAUDIT_ADDR            = 451 // { int getaudit_addr( \
++	SYS_SETAUDIT_ADDR            = 452 // { int setaudit_addr( \
++	SYS_AUDITCTL                 = 453 // { int auditctl(char *path); }
++	SYS__UMTX_OP                 = 454 // { int _umtx_op(void *obj, int op, \
++	SYS_THR_NEW                  = 455 // { int thr_new(struct thr_param *param, \
++	SYS_SIGQUEUE                 = 456 // { int sigqueue(pid_t pid, int signum, void *value); }
++	SYS_ABORT2                   = 463 // { int abort2(const char *why, int nargs, void **args); }
++	SYS_THR_SET_NAME             = 464 // { int thr_set_name(long id, const char *name); }
++	SYS_RTPRIO_THREAD            = 466 // { int rtprio_thread(int function, \
++	SYS_SCTP_PEELOFF             = 471 // { int sctp_peeloff(int sd, uint32_t name); }
++	SYS_SCTP_GENERIC_SENDMSG     = 472 // { int sctp_generic_sendmsg(int sd, caddr_t msg, int mlen, \
++	SYS_SCTP_GENERIC_SENDMSG_IOV = 473 // { int sctp_generic_sendmsg_iov(int sd, struct iovec *iov, int iovlen, \
++	SYS_SCTP_GENERIC_RECVMSG     = 474 // { int sctp_generic_recvmsg(int sd, struct iovec *iov, int iovlen, \
++	SYS_PREAD                    = 475 // { ssize_t pread(int fd, void *buf, \
++	SYS_PWRITE                   = 476 // { ssize_t pwrite(int fd, const void *buf, \
++	SYS_MMAP                     = 477 // { caddr_t mmap(caddr_t addr, size_t len, \
++	SYS_LSEEK                    = 478 // { off_t lseek(int fd, off_t offset, \
++	SYS_TRUNCATE                 = 479 // { int truncate(char *path, off_t length); }
++	SYS_FTRUNCATE                = 480 // { int ftruncate(int fd, off_t length); }
++	SYS_THR_KILL2                = 481 // { int thr_kill2(pid_t pid, long id, int sig); }
++	SYS_SHM_OPEN                 = 482 // { int shm_open(const char *path, int flags, \
++	SYS_SHM_UNLINK               = 483 // { int shm_unlink(const char *path); }
++	SYS_CPUSET                   = 484 // { int cpuset(cpusetid_t *setid); }
++	SYS_CPUSET_SETID             = 485 // { int cpuset_setid(cpuwhich_t which, id_t id, \
++	SYS_CPUSET_GETID             = 486 // { int cpuset_getid(cpulevel_t level, \
++	SYS_CPUSET_GETAFFINITY       = 487 // { int cpuset_getaffinity(cpulevel_t level, \
++	SYS_CPUSET_SETAFFINITY       = 488 // { int cpuset_setaffinity(cpulevel_t level, \
++	SYS_FACCESSAT                = 489 // { int faccessat(int fd, char *path, int amode, \
++	SYS_FCHMODAT                 = 490 // { int fchmodat(int fd, char *path, mode_t mode, \
++	SYS_FCHOWNAT                 = 491 // { int fchownat(int fd, char *path, uid_t uid, \
++	SYS_FEXECVE                  = 492 // { int fexecve(int fd, char **argv, \
++	SYS_FSTATAT                  = 493 // { int fstatat(int fd, char *path, \
++	SYS_FUTIMESAT                = 494 // { int futimesat(int fd, char *path, \
++	SYS_LINKAT                   = 495 // { int linkat(int fd1, char *path1, int fd2, \
++	SYS_MKDIRAT                  = 496 // { int mkdirat(int fd, char *path, mode_t mode); }
++	SYS_MKFIFOAT                 = 497 // { int mkfifoat(int fd, char *path, mode_t mode); }
++	SYS_MKNODAT                  = 498 // { int mknodat(int fd, char *path, mode_t mode, \
++	SYS_OPENAT                   = 499 // { int openat(int fd, char *path, int flag, \
++	SYS_READLINKAT               = 500 // { int readlinkat(int fd, char *path, char *buf, \
++	SYS_RENAMEAT                 = 501 // { int renameat(int oldfd, char *old, int newfd, \
++	SYS_SYMLINKAT                = 502 // { int symlinkat(char *path1, int fd, \
++	SYS_UNLINKAT                 = 503 // { int unlinkat(int fd, char *path, int flag); }
++	SYS_POSIX_OPENPT             = 504 // { int posix_openpt(int flags); }
++	SYS_JAIL_GET                 = 506 // { int jail_get(struct iovec *iovp, \
++	SYS_JAIL_SET                 = 507 // { int jail_set(struct iovec *iovp, \
++	SYS_JAIL_REMOVE              = 508 // { int jail_remove(int jid); }
++	SYS_CLOSEFROM                = 509 // { int closefrom(int lowfd); }
++	SYS_LPATHCONF                = 513 // { int lpathconf(char *path, int name); }
++	SYS_CAP_NEW                  = 514 // { int cap_new(int fd, uint64_t rights); }
++	SYS_CAP_GETRIGHTS            = 515 // { int cap_getrights(int fd, \
++	SYS_CAP_ENTER                = 516 // { int cap_enter(void); }
++	SYS_CAP_GETMODE              = 517 // { int cap_getmode(u_int *modep); }
++	SYS_PDFORK                   = 518 // { int pdfork(int *fdp, int flags); }
++	SYS_PDKILL                   = 519 // { int pdkill(int fd, int signum); }
++	SYS_PDGETPID                 = 520 // { int pdgetpid(int fd, pid_t *pidp); }
++	SYS_PSELECT                  = 522 // { int pselect(int nd, fd_set *in, \
++	SYS_GETLOGINCLASS            = 523 // { int getloginclass(char *namebuf, \
++	SYS_SETLOGINCLASS            = 524 // { int setloginclass(const char *namebuf); }
++	SYS_RCTL_GET_RACCT           = 525 // { int rctl_get_racct(const void *inbufp, \
++	SYS_RCTL_GET_RULES           = 526 // { int rctl_get_rules(const void *inbufp, \
++	SYS_RCTL_GET_LIMITS          = 527 // { int rctl_get_limits(const void *inbufp, \
++	SYS_RCTL_ADD_RULE            = 528 // { int rctl_add_rule(const void *inbufp, \
++	SYS_RCTL_REMOVE_RULE         = 529 // { int rctl_remove_rule(const void *inbufp, \
++	SYS_POSIX_FALLOCATE          = 530 // { int posix_fallocate(int fd, \
++	SYS_POSIX_FADVISE            = 531 // { int posix_fadvise(int fd, off_t offset, \
++	SYS_WAIT6                    = 532 // { int wait6(idtype_t idtype, id_t id, \
++	SYS_BINDAT                   = 538 // { int bindat(int fd, int s, caddr_t name, \
++	SYS_CONNECTAT                = 539 // { int connectat(int fd, int s, caddr_t name, \
++	SYS_CHFLAGSAT                = 540 // { int chflagsat(int fd, const char *path, \
++	SYS_ACCEPT4                  = 541 // { int accept4(int s, \
++	SYS_PIPE2                    = 542 // { int pipe2(int *fildes, int flags); }
++	SYS_PROCCTL                  = 544 // { int procctl(idtype_t idtype, id_t id, \
++	SYS_UTIMENSAT                = 547 // { int utimensat(int fd, \
++)
+diff --git a/src/syscall/ztypes_freebsd_arm64.go b/src/syscall/ztypes_freebsd_arm64.go
+new file mode 100644
+index 0000000000..6d56fc85cf
+--- /dev/null
++++ b/src/syscall/ztypes_freebsd_arm64.go
+@@ -0,0 +1,572 @@
++// Code generated by cmd/cgo -godefs; DO NOT EDIT.
++// cgo -godefs types_freebsd.go | go run mkpost.go
++
++// +build arm64,freebsd
++
++package syscall
++
++const (
++	sizeofPtr      = 0x8
++	sizeofShort    = 0x2
++	sizeofInt      = 0x4
++	sizeofLong     = 0x8
++	sizeofLongLong = 0x8
++)
++
++type (
++	_C_short     int16
++	_C_int       int32
++	_C_long      int64
++	_C_long_long int64
++)
++
++type Timespec struct {
++	Sec  int64
++	Nsec int64
++}
++
++type Timeval struct {
++	Sec  int64
++	Usec int64
++}
++
++type Rusage struct {
++	Utime    Timeval
++	Stime    Timeval
++	Maxrss   int64
++	Ixrss    int64
++	Idrss    int64
++	Isrss    int64
++	Minflt   int64
++	Majflt   int64
++	Nswap    int64
++	Inblock  int64
++	Oublock  int64
++	Msgsnd   int64
++	Msgrcv   int64
++	Nsignals int64
++	Nvcsw    int64
++	Nivcsw   int64
++}
++
++type Rlimit struct {
++	Cur int64
++	Max int64
++}
++
++type _Gid_t uint32
++
++const (
++	S_IFMT   = 0xf000
++	S_IFIFO  = 0x1000
++	S_IFCHR  = 0x2000
++	S_IFDIR  = 0x4000
++	S_IFBLK  = 0x6000
++	S_IFREG  = 0x8000
++	S_IFLNK  = 0xa000
++	S_IFSOCK = 0xc000
++	S_ISUID  = 0x800
++	S_ISGID  = 0x400
++	S_ISVTX  = 0x200
++	S_IRUSR  = 0x100
++	S_IWUSR  = 0x80
++	S_IXUSR  = 0x40
++	S_IRWXG  = 0x38
++	S_IRWXO  = 0x7
++)
++
++const (
++	_statfsVersion = 0x20140518
++	_dirblksiz     = 0x400
++)
++
++type Stat_t struct {
++	Dev           uint64
++	Ino           uint64
++	Nlink         uint64
++	Mode          uint16
++	Padding0      int16
++	Uid           uint32
++	Gid           uint32
++	Padding1      int32
++	Rdev          uint64
++	Atimespec     Timespec
++	Mtimespec     Timespec
++	Ctimespec     Timespec
++	Birthtimespec Timespec
++	Size          int64
++	Blocks        int64
++	Blksize       int32
++	Flags         uint32
++	Gen           uint64
++	Spare         [10]uint64
++}
++
++type stat_freebsd11_t struct {
++	Dev           uint32
++	Ino           uint32
++	Mode          uint16
++	Nlink         uint16
++	Uid           uint32
++	Gid           uint32
++	Rdev          uint32
++	Atimespec     Timespec
++	Mtimespec     Timespec
++	Ctimespec     Timespec
++	Size          int64
++	Blocks        int64
++	Blksize       int32
++	Flags         uint32
++	Gen           uint32
++	Lspare        int32
++	Birthtimespec Timespec
++}
++
++type Statfs_t struct {
++	Version     uint32
++	Type        uint32
++	Flags       uint64
++	Bsize       uint64
++	Iosize      uint64
++	Blocks      uint64
++	Bfree       uint64
++	Bavail      int64
++	Files       uint64
++	Ffree       int64
++	Syncwrites  uint64
++	Asyncwrites uint64
++	Syncreads   uint64
++	Asyncreads  uint64
++	Spare       [10]uint64
++	Namemax     uint32
++	Owner       uint32
++	Fsid        Fsid
++	Charspare   [80]int8
++	Fstypename  [16]int8
++	Mntfromname [1024]int8
++	Mntonname   [1024]int8
++}
++
++type statfs_freebsd11_t struct {
++	Version     uint32
++	Type        uint32
++	Flags       uint64
++	Bsize       uint64
++	Iosize      uint64
++	Blocks      uint64
++	Bfree       uint64
++	Bavail      int64
++	Files       uint64
++	Ffree       int64
++	Syncwrites  uint64
++	Asyncwrites uint64
++	Syncreads   uint64
++	Asyncreads  uint64
++	Spare       [10]uint64
++	Namemax     uint32
++	Owner       uint32
++	Fsid        Fsid
++	Charspare   [80]int8
++	Fstypename  [16]int8
++	Mntfromname [88]int8
++	Mntonname   [88]int8
++}
++
++type Flock_t struct {
++	Start     int64
++	Len       int64
++	Pid       int32
++	Type      int16
++	Whence    int16
++	Sysid     int32
++	Pad_cgo_0 [4]byte
++}
++
++type Dirent struct {
++	Fileno uint64
++	Off    int64
++	Reclen uint16
++	Type   uint8
++	Pad0   uint8
++	Namlen uint16
++	Pad1   uint16
++	Name   [256]int8
++}
++
++type dirent_freebsd11 struct {
++	Fileno uint32
++	Reclen uint16
++	Type   uint8
++	Namlen uint8
++	Name   [256]int8
++}
++
++type Fsid struct {
++	Val [2]int32
++}
++
++const (
++	pathMax = 0x400
++)
++
++type RawSockaddrInet4 struct {
++	Len    uint8
++	Family uint8
++	Port   uint16
++	Addr   [4]byte /* in_addr */
++	Zero   [8]int8
++}
++
++type RawSockaddrInet6 struct {
++	Len      uint8
++	Family   uint8
++	Port     uint16
++	Flowinfo uint32
++	Addr     [16]byte /* in6_addr */
++	Scope_id uint32
++}
++
++type RawSockaddrUnix struct {
++	Len    uint8
++	Family uint8
++	Path   [104]int8
++}
++
++type RawSockaddrDatalink struct {
++	Len    uint8
++	Family uint8
++	Index  uint16
++	Type   uint8
++	Nlen   uint8
++	Alen   uint8
++	Slen   uint8
++	Data   [46]int8
++}
++
++type RawSockaddr struct {
++	Len    uint8
++	Family uint8
++	Data   [14]int8
++}
++
++type RawSockaddrAny struct {
++	Addr RawSockaddr
++	Pad  [92]int8
++}
++
++type _Socklen uint32
++
++type Linger struct {
++	Onoff  int32
++	Linger int32
++}
++
++type Iovec struct {
++	Base *byte
++	Len  uint64
++}
++
++type IPMreq struct {
++	Multiaddr [4]byte /* in_addr */
++	Interface [4]byte /* in_addr */
++}
++
++type IPMreqn struct {
++	Multiaddr [4]byte /* in_addr */
++	Address   [4]byte /* in_addr */
++	Ifindex   int32
++}
++
++type IPv6Mreq struct {
++	Multiaddr [16]byte /* in6_addr */
++	Interface uint32
++}
++
++type Msghdr struct {
++	Name       *byte
++	Namelen    uint32
++	Pad_cgo_0  [4]byte
++	Iov        *Iovec
++	Iovlen     int32
++	Pad_cgo_1  [4]byte
++	Control    *byte
++	Controllen uint32
++	Flags      int32
++}
++
++type Cmsghdr struct {
++	Len   uint32
++	Level int32
++	Type  int32
++}
++
++type Inet6Pktinfo struct {
++	Addr    [16]byte /* in6_addr */
++	Ifindex uint32
++}
++
++type IPv6MTUInfo struct {
++	Addr RawSockaddrInet6
++	Mtu  uint32
++}
++
++type ICMPv6Filter struct {
++	Filt [8]uint32
++}
++
++const (
++	SizeofSockaddrInet4    = 0x10
++	SizeofSockaddrInet6    = 0x1c
++	SizeofSockaddrAny      = 0x6c
++	SizeofSockaddrUnix     = 0x6a
++	SizeofSockaddrDatalink = 0x36
++	SizeofLinger           = 0x8
++	SizeofIPMreq           = 0x8
++	SizeofIPMreqn          = 0xc
++	SizeofIPv6Mreq         = 0x14
++	SizeofMsghdr           = 0x30
++	SizeofCmsghdr          = 0xc
++	SizeofInet6Pktinfo     = 0x14
++	SizeofIPv6MTUInfo      = 0x20
++	SizeofICMPv6Filter     = 0x20
++)
++
++const (
++	PTRACE_TRACEME = 0x0
++	PTRACE_CONT    = 0x7
++	PTRACE_KILL    = 0x8
++)
++
++type Kevent_t struct {
++	Ident  uint64
++	Filter int16
++	Flags  uint16
++	Fflags uint32
++	Data   int64
++	Udata  *byte
++}
++
++type FdSet struct {
++	X__fds_bits [16]uint64
++}
++
++const (
++	sizeofIfMsghdr         = 0xa8
++	SizeofIfMsghdr         = 0xa8
++	sizeofIfData           = 0x98
++	SizeofIfData           = 0x98
++	SizeofIfaMsghdr        = 0x14
++	SizeofIfmaMsghdr       = 0x10
++	SizeofIfAnnounceMsghdr = 0x18
++	SizeofRtMsghdr         = 0x98
++	SizeofRtMetrics        = 0x70
++)
++
++type ifMsghdr struct {
++	Msglen    uint16
++	Version   uint8
++	Type      uint8
++	Addrs     int32
++	Flags     int32
++	Index     uint16
++	Pad_cgo_0 [2]byte
++	Data      ifData
++}
++
++type IfMsghdr struct {
++	Msglen    uint16
++	Version   uint8
++	Type      uint8
++	Addrs     int32
++	Flags     int32
++	Index     uint16
++	Pad_cgo_0 [2]byte
++	Data      IfData
++}
++
++type ifData struct {
++	Type        uint8
++	Physical    uint8
++	Addrlen     uint8
++	Hdrlen      uint8
++	Link_state  uint8
++	Vhid        uint8
++	Baudrate_pf uint8
++	Datalen     uint8
++	Mtu         uint64
++	Metric      uint64
++	Baudrate    uint64
++	Ipackets    uint64
++	Ierrors     uint64
++	Opackets    uint64
++	Oerrors     uint64
++	Collisions  uint64
++	Ibytes      uint64
++	Obytes      uint64
++	Imcasts     uint64
++	Omcasts     uint64
++	Iqdrops     uint64
++	Noproto     uint64
++	Hwassist    uint64
++	Epoch       int64
++	Lastchange  Timeval
++}
++
++type IfData struct {
++	Type        uint8
++	Physical    uint8
++	Addrlen     uint8
++	Hdrlen      uint8
++	Link_state  uint8
++	Spare_char1 uint8
++	Spare_char2 uint8
++	Datalen     uint8
++	Mtu         uint64
++	Metric      uint64
++	Baudrate    uint64
++	Ipackets    uint64
++	Ierrors     uint64
++	Opackets    uint64
++	Oerrors     uint64
++	Collisions  uint64
++	Ibytes      uint64
++	Obytes      uint64
++	Imcasts     uint64
++	Omcasts     uint64
++	Iqdrops     uint64
++	Noproto     uint64
++	Hwassist    uint64
++	Epoch       int64
++	Lastchange  Timeval
++}
++
++type IfaMsghdr struct {
++	Msglen    uint16
++	Version   uint8
++	Type      uint8
++	Addrs     int32
++	Flags     int32
++	Index     uint16
++	Pad_cgo_0 [2]byte
++	Metric    int32
++}
++
++type IfmaMsghdr struct {
++	Msglen    uint16
++	Version   uint8
++	Type      uint8
++	Addrs     int32
++	Flags     int32
++	Index     uint16
++	Pad_cgo_0 [2]byte
++}
++
++type IfAnnounceMsghdr struct {
++	Msglen  uint16
++	Version uint8
++	Type    uint8
++	Index   uint16
++	Name    [16]int8
++	What    uint16
++}
++
++type RtMsghdr struct {
++	Msglen    uint16
++	Version   uint8
++	Type      uint8
++	Index     uint16
++	Pad_cgo_0 [2]byte
++	Flags     int32
++	Addrs     int32
++	Pid       int32
++	Seq       int32
++	Errno     int32
++	Fmask     int32
++	Inits     uint64
++	Rmx       RtMetrics
++}
++
++type RtMetrics struct {
++	Locks    uint64
++	Mtu      uint64
++	Hopcount uint64
++	Expire   uint64
++	Recvpipe uint64
++	Sendpipe uint64
++	Ssthresh uint64
++	Rtt      uint64
++	Rttvar   uint64
++	Pksent   uint64
++	Weight   uint64
++	Filler   [3]uint64
++}
++
++const (
++	SizeofBpfVersion    = 0x4
++	SizeofBpfStat       = 0x8
++	SizeofBpfZbuf       = 0x18
++	SizeofBpfProgram    = 0x10
++	SizeofBpfInsn       = 0x8
++	SizeofBpfHdr        = 0x20
++	SizeofBpfZbufHeader = 0x20
++)
++
++type BpfVersion struct {
++	Major uint16
++	Minor uint16
++}
++
++type BpfStat struct {
++	Recv uint32
++	Drop uint32
++}
++
++type BpfZbuf struct {
++	Bufa   *byte
++	Bufb   *byte
++	Buflen uint64
++}
++
++type BpfProgram struct {
++	Len       uint32
++	Pad_cgo_0 [4]byte
++	Insns     *BpfInsn
++}
++
++type BpfInsn struct {
++	Code uint16
++	Jt   uint8
++	Jf   uint8
++	K    uint32
++}
++
++type BpfHdr struct {
++	Tstamp    Timeval
++	Caplen    uint32
++	Datalen   uint32
++	Hdrlen    uint16
++	Pad_cgo_0 [6]byte
++}
++
++type BpfZbufHeader struct {
++	Kernel_gen uint32
++	Kernel_len uint32
++	User_gen   uint32
++	X_bzh_pad  [5]uint32
++}
++
++const (
++	_AT_FDCWD            = -0x64
++	_AT_SYMLINK_FOLLOW   = 0x400
++	_AT_SYMLINK_NOFOLLOW = 0x200
++)
++
++type Termios struct {
++	Iflag  uint32
++	Oflag  uint32
++	Cflag  uint32
++	Lflag  uint32
++	Cc     [20]uint8
++	Ispeed uint32
++	Ospeed uint32
++}

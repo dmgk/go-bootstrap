@@ -4,10 +4,14 @@
 GOROOT=		/usr/local/go
 
 GOOS=		freebsd
-GOARCH=		amd64 386 arm
+GOARCH=		amd64 386 arm arm64
 GOARM=		6 7
 
 all:
+	cd ${.CURDIR}/go ; \
+		git reset --hard ; \
+		git clean -fd ; \
+		git apply ${.CURDIR}/arm64/arm64.patch
 .for goarch in ${GOARCH}
 .  if ${goarch} == arm
 .    for goarm in ${GOARM}
@@ -25,6 +29,9 @@ all:
 .endfor
 
 clean:
+	cd ${.CURDIR}/go ; \
+		git reset --hard ; \
+		git clean -fd
 	rm -rf go-*-bootstrap go-*.tar.xz
 
 upload:
