@@ -1,41 +1,35 @@
 # Build Go bootstrap toolchains from the modern source.
-# bash is expected to be on PATH
+# bash is expected to be on the PATH
 
 GOROOT=		/usr/local/go
 
 GOOS=		freebsd
-GOARCH=		amd64 386 arm arm64
-GOARM=		6 7
+ARCHS=		386 amd64 arm6 arm7 arm64
 
-all:
-	cd ${.CURDIR}/go ; \
-		git reset --hard ; \
-		git clean -fd ; \
-		git apply ${.CURDIR}/arm64/arm64.patch
-.for goarch in ${GOARCH}
-.  if ${goarch} == arm
-.    for goarm in ${GOARM}
+all: ${ARCHS}
+
+.for arch in ${ARCHS}
+${arch}: clean-${arch}
 	cd ${.CURDIR}/go/src ; \
 		env GOROOT=${GOROOT} PATH=${GOROOT}/bin:$$PATH \
-		GOOS=${GOOS} GOARCH=${goarch} GOARM=${goarm} CGO_ENABLED=0 \
+		GOOS=${GOOS} \
+		GOARCH=${arch:C/^arm.$/arm/} \
+		GOARM=${arch:Marm?:S/arm//} \
+		GO386=${arch:M386:S/386/387/} \
+		CGO_ENABLED=0 \
 		../../bootstrap.sh
-.    endfor
-.  else
-	cd ${.CURDIR}/go/src ; \
-		env GOROOT=${GOROOT} PATH=${GOROOT}/bin:$$PATH \
-		GOOS=${GOOS} GOARCH=${goarch} GO386=387 CGO_ENABLED=0 \
-		../../bootstrap.sh
-.  endif
+
+clean-${arch}:
+	rm -rf ${.CURDIR}/go-freebsd-${arch}-bootstrap
+
+.PHONY: ${arch} clean-${arch}
 .endfor
 
 clean:
-	cd ${.CURDIR}/go ; \
-		git reset --hard ; \
-		git clean -fd
 	rm -rf go-*-bootstrap go-*.tar.xz
 
 upload:
-	# todo
+	# TODO: make Github release and upload assets
 	cp -pv go-*.tar.xz ~/ports/distfiles
 
 .PHONY: all clean upload

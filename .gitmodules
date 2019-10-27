@@ -1,4 +1,4 @@
 [submodule "go"]
 	path = go
 	url = https://github.com/golang/go.git
-	branch = release-branch.go1.13
+	branch = master
