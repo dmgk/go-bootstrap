@@ -1,0 +1,99 @@
+diff --git a/src/runtime/os_freebsd.go b/src/runtime/os_freebsd.go
+index 69e05b66a2..5db3fafb6f 100644
+--- a/src/runtime/os_freebsd.go
++++ b/src/runtime/os_freebsd.go
+@@ -368,7 +368,19 @@ func (c *sigctxt) fixsigcode(sig uint32) {
+ }
+ 
+ func sysargs(argc int32, argv **byte) {
+-	n := argc + 1
++	var qemu bool
++	n := int32(0)
++	for argv_index(argv, argc+1+n) != nil {
++		n++
++	}
++	for i := int32(0); i < n; i++ {
++		if gostringnocopy(argv_index(argv, argc+1+i)) == "QEMU_EMULATING=1" {
++			qemu = true
++			break
++		}
++	}
++
++	n = argc + 1
+ 
+ 	// skip over argv, envp to get to auxv
+ 	for argv_index(argv, n) != nil {
+@@ -380,7 +392,7 @@ func sysargs(argc int32, argv **byte) {
+ 
+ 	// now argv+n is auxv
+ 	auxv := (*[1 << 28]uintptr)(add(unsafe.Pointer(argv), uintptr(n)*sys.PtrSize))
+-	sysauxv(auxv[:])
++	sysauxv(auxv[:], qemu)
+ }
+ 
+ const (
+@@ -391,7 +403,7 @@ const (
+ 	_AT_HWCAP2   = 26 // CPU feature flags 2
+ )
+ 
+-func sysauxv(auxv []uintptr) {
++func sysauxv(auxv []uintptr, qemu bool) {
+ 	for i := 0; auxv[i] != _AT_NULL; i += 2 {
+ 		tag, val := auxv[i], auxv[i+1]
+ 		switch tag {
+@@ -402,7 +414,7 @@ func sysauxv(auxv []uintptr) {
+ 			timekeepSharedPage = (*vdsoTimekeep)(unsafe.Pointer(val))
+ 		}
+ 
+-		archauxv(tag, val)
++		archauxv(tag, val, qemu)
+ 	}
+ }
+ 
+diff --git a/src/runtime/os_freebsd_arm.go b/src/runtime/os_freebsd_arm.go
+index 3edd381302..3ef80952b3 100644
+--- a/src/runtime/os_freebsd_arm.go
++++ b/src/runtime/os_freebsd_arm.go
+@@ -31,7 +31,7 @@ func checkgoarm() {
+ 	}
+ }
+ 
+-func archauxv(tag, val uintptr) {
++func archauxv(tag, val uintptr, qemu bool) {
+ 	switch tag {
+ 	case _AT_HWCAP:
+ 		cpu.HWCap = uint(val)
+diff --git a/src/runtime/os_freebsd_arm64.go b/src/runtime/os_freebsd_arm64.go
+index 800bd2fa6e..05aff6bae3 100644
+--- a/src/runtime/os_freebsd_arm64.go
++++ b/src/runtime/os_freebsd_arm64.go
+@@ -39,12 +39,14 @@ func getpfr0() uint64
+ 
+ // no hwcap support on FreeBSD aarch64, we need to retrieve the info from
+ // ID_AA64ISAR0_EL1, ID_AA64ISAR1_EL1 and ID_AA64PFR0_EL1
+-func archauxv(tag, val uintptr) {
++func archauxv(tag, val uintptr, qemu bool) {
+ 	var isar0, isar1, pfr0 uint64
+ 
+-	isar0 = getisar0()
+-	isar1 = getisar1()
+-	pfr0 = getpfr0()
++	if !qemu {
++		isar0 = getisar0()
++		isar1 = getisar1()
++		pfr0 = getpfr0()
++	}
+ 
+ 	// ID_AA64ISAR0_EL1
+ 	switch extractBits(isar0, 4, 7) {
+diff --git a/src/runtime/os_freebsd_noauxv.go b/src/runtime/os_freebsd_noauxv.go
+index c6a49927c8..29570fd5a4 100644
+--- a/src/runtime/os_freebsd_noauxv.go
++++ b/src/runtime/os_freebsd_noauxv.go
+@@ -7,5 +7,5 @@
+ 
+ package runtime
+ 
+-func archauxv(tag, val uintptr) {
++func archauxv(tag, val uintptr, qemu bool) {
+ }
