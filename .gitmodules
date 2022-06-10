@@ -1,4 +1,4 @@
 [submodule "go"]
 	path = go
-	url = https://github.com/golang/go.git
-	branch = master
+	url = https://github.com/MikaelUrankar/go
+	branch = freebsd_riscv64

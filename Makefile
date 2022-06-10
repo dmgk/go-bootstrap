@@ -4,7 +4,7 @@
 GOROOT=		/usr/local/go
 
 GOOS=		freebsd
-ARCHS=		386 amd64 arm6 arm7 arm64
+ARCHS=		386 amd64 arm6 arm7 arm64 riscv64
 
 all: ${ARCHS}
 
@@ -26,16 +26,26 @@ clean-${arch}: unpatch
 .endfor
 
 patch:
-	( cd ${.CURDIR}/go && git apply ${.CURDIR}/patches/*.patch )
+	[ ! -d ${.CURDIR}/patches -o -z "$(ls ${.CURDIR}/patches/*.patch)" ] || ( \
+		cd ${.CURDIR}/go && \
+		git apply ${.CURDIR}/patches/*.patch && \
+		touch ${.CURDIR}/.patch-done \
+	)
 
 unpatch:
-	( cd ${.CURDIR}/go && git reset --hard && git clean -fd )
+	[ ! -f ${.CURDIR}/.patch-done ] || ( \
+		cd ${.CURDIR}/go && \
+		git reset --hard && git clean -fd && \
+		rm -f ${.CURDIR}/.patch-done \
+	)
 
 clean: unpatch
 	rm -rf go-*-bootstrap go-*.tar.xz
 
 upload:
-	# TODO: make Github release and upload assets
 	cp -pv go-*.tar.xz ~/ports/distfiles
+
+scp:
+	scp -P 8022 go-freebsd-riscv64-*.tar.xz localhost:.
 
 .PHONY: all clean upload
