@@ -4,12 +4,12 @@
 GOROOT=		/usr/local/go
 
 GOOS=		freebsd
-ARCHS=		386 amd64 arm6 arm7 arm64
+ARCHS=		386 amd64 arm6 arm7 arm64 riscv64
 
 all: ${ARCHS}
 
 .for arch in ${ARCHS}
-${arch}: clean-${arch} patch
+${arch}: .PHONY clean-${arch} patch
 	cd ${.CURDIR}/go/src ; \
 		env GOROOT=${GOROOT} PATH=${GOROOT}/bin:$$PATH \
 		GOOS=${GOOS} \
@@ -19,23 +19,29 @@ ${arch}: clean-${arch} patch
 		CGO_ENABLED=0 \
 		../../bootstrap.sh
 
-clean-${arch}: unpatch
+clean-${arch}: .PHONY unpatch
 	rm -rf ${.CURDIR}/go-freebsd-${arch}-bootstrap
-
-.PHONY: ${arch} clean-${arch}
 .endfor
 
-patch:
-	( cd ${.CURDIR}/go && git apply ${.CURDIR}/patches/*.patch )
+patch: .PHONY
+	[ ! -d ${.CURDIR}/patches -o -z "$(ls ${.CURDIR}/patches/*.patch)" ] || ( \
+		cd ${.CURDIR}/go && \
+		git apply ${.CURDIR}/patches/*.patch && \
+		touch ${.CURDIR}/.patch-done \
+	)
 
-unpatch:
-	( cd ${.CURDIR}/go && git reset --hard && git clean -fd )
+unpatch: .PHONY
+	[ ! -f ${.CURDIR}/.patch-done ] || ( \
+		cd ${.CURDIR}/go && \
+		git reset --hard && git clean -fd && \
+		rm -f ${.CURDIR}/.patch-done \
+	)
 
-clean: unpatch
+clean: .PHONY unpatch
 	rm -rf go-*-bootstrap go-*.tar.xz
 
-upload:
-	# TODO: make Github release and upload assets
+upload: .PHONY
 	cp -pv go-*.tar.xz ~/ports/distfiles
 
-.PHONY: all clean upload
+scp: .PHONY
+	scp -P 8022 go-freebsd-riscv64-*.tar.xz localhost:.
